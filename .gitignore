@@ -1,0 +1,9 @@
+.venv/
+build*/
+__pycache__/
+*.py[cod]
+*.log
+
+CAGRA/results/
+CAGRA/logs/
+ann_quantization/prepared/

@@ -1,0 +1,7 @@
+build*/
+results/
+logs/
+.venv/
+__pycache__/
+*.log
+*.py[cod]

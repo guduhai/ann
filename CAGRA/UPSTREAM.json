@@ -1,0 +1,12 @@
+[
+  {
+    "project": "ZJULearning/nsg",
+    "commit": "5ec8fadf6af71b6b48a486bbaa28c8b7cae34275",
+    "archive_sha256": "007181376bf2aba43fc02b0654075a0ef80ba81169fe15db4106f4147a281a68"
+  },
+  {
+    "project": "ZJULearning/efanna_graph",
+    "commit": "6d741ad44a3c565507f86d955917dc028ffe67bc",
+    "archive_sha256": "1f9b5bc430e7cf4871d8d21a07721d22e3e19c8e79ad5b8fdf130a6b50b691e9"
+  }
+]
