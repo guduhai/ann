@@ -1,0 +1,32 @@
+{
+  "W": 50,
+  "k": 10,
+  "queries": 10000,
+  "warmup": 200,
+  "repeats": 1,
+  "threads": 1,
+  "rerank": false,
+  "database_vectors": 1000000,
+  "dimensions": 128,
+  "representations": {
+    "int8": {
+      "bytes_per_vector": 128
+    },
+    "pq64": {
+      "bytes_per_vector": 64
+    },
+    "pca80": {
+      "dimensions": 80,
+      "bytes_per_vector": 320
+    },
+    "local": {
+      "clusters": 32,
+      "bytes_per_vector": 129
+    }
+  },
+  "index": "NSG",
+  "graph": {
+    "graph": "indexes/sift.nsg",
+    "sha256": "d99cfe71a519942f0b91835087b82f36feaca22feb375c000afc60888420ee09"
+  }
+}

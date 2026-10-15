@@ -1,0 +1,7 @@
+{
+  "hnswlib": {
+    "repository": "https://github.com/nmslib/hnswlib",
+    "commit": "3f3429661187e4c24a490a0f148fc6bc89042b3d"
+  },
+  "portability": "Preserve the previously validated ARM64 conditional includes and SIMDe compatibility headers. Graph construction and traversal algorithms are unchanged."
+}

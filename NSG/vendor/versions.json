@@ -1,0 +1,7 @@
+{
+  "nsg": {
+    "repository": "https://github.com/ZJULearning/nsg",
+    "commit": "5ec8fadf6af71b6b48a486bbaa28c8b7cae34275"
+  },
+  "portability": "Preserve the previously validated ARM64 conditional includes and SIMDe compatibility headers. Graph construction and traversal algorithms are unchanged."
+}

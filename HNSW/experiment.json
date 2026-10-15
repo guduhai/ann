@@ -1,0 +1,33 @@
+{
+  "W": 50,
+  "k": 10,
+  "queries": 10000,
+  "warmup": 200,
+  "repeats": 1,
+  "threads": 1,
+  "rerank": false,
+  "database_vectors": 1000000,
+  "dimensions": 128,
+  "representations": {
+    "int8": {
+      "bytes_per_vector": 128
+    },
+    "pq64": {
+      "bytes_per_vector": 64
+    },
+    "pca80": {
+      "dimensions": 80,
+      "bytes_per_vector": 320
+    },
+    "local": {
+      "clusters": 32,
+      "bytes_per_vector": 129
+    }
+  },
+  "index": "HNSW",
+  "graph": {
+    "graph": "indexes/hnsw-1m.bin",
+    "compact_graph": "indexes/hnsw-1m-codeids.bin",
+    "sha256": "2624aecbf7f516b0c5dab1f60b070d8c1e7539312fa5141dd6c3c5635fd844cc"
+  }
+}

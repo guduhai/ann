@@ -1,0 +1,38 @@
+# Separate project, managed independently.
+/CAGRA/
+
+# Environments, dependencies and build outputs.
+/.deps/
+/build/
+**/.venv/
+**/__pycache__/
+*.py[cod]
+*.o
+*.a
+*.so
+*.so.*
+.cache/
+
+# Runtime inputs and frozen arrays are stored outside Git.
+/data/
+*.hdf5
+**/indexes/
+**/codes/
+/ann_quantization/prepared/
+
+# Experiment outputs and local credentials must not be committed.
+**/results/
+**/tmp/
+*.log
+*.time
+*.exit
+.env
+.env.*
+*.pem
+*.key
+.ssh*
+.pi-control*
+.DS_Store
+Thumbs.db
+
+/vendor/deps/

@@ -1,0 +1,7 @@
+{
+  "diskann": {
+    "repository": "https://github.com/microsoft/DiskANN",
+    "commit": "78256bbab4685e1774e78d331e081a153be26823"
+  },
+  "portability": "Preserve the previously validated ARM64 conditional includes and SIMDe compatibility headers. Graph construction and traversal algorithms are unchanged."
+}
