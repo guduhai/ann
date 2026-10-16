@@ -1,2 +1,0 @@
-# Recall evaluation; native build and search use C++.
-numpy==1.26.4

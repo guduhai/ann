@@ -3,7 +3,11 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$root"
 export PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
-python="${PYTHON:-python3}"
+python="${PYTHON:-$root/../.venv/bin/python}"
+if ! command -v "$python" >/dev/null 2>&1; then
+  echo "找不到 Python 解释器：$python。请按根目录 README.md 配置环境，或用 PYTHON 指定解释器路径。" >&2
+  exit 1
+fi
 out="${OUTPUT:-results/local-$(date +%Y%m%d-%H%M%S)}"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"${JOBS:-2}"

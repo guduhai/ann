@@ -1,1 +1,0 @@
-# Search launcher uses the Python standard library only.

@@ -9,23 +9,9 @@ vectors. Training and encoding use the repository's shared `ann_quantization`
 package and NumPy.
 
 This is a CPU research implementation, not NVIDIA CUDA/cuVS CAGRA. Faiss, CUDA,
-cuVS and Boost are not required.
+cuVS are not required by CAGRA. The repository-wide dependency list is maintained in the root README.
 
-## Platforms and requirements
-
-The instructions target Ubuntu Linux on x86-64 and ARM64, including Ubuntu under
-WSL2 and Ubuntu on Raspberry Pi. Existing experiment records cover Ubuntu 24.04
-on WSL x86-64 and Raspberry Pi ARM64. Native Windows and Android execution have
-not been validated. Memory metrics use Linux `/proc/self/status`; verification
-also uses `ldd`.
-
-- Python 3.11 or newer; Python 3.12 from Ubuntu 24.04 is recommended.
-- GCC/G++ with C++17 and OpenMP support.
-- CMake 3.16 or newer.
-- NumPy and h5py from `requirements.txt`.
-
-The Python requirements specify version ranges, not a locked environment.
-Timing and floating point results can differ between machines.
+See the [repository root guide](../README.md) for shared dependencies, environment setup and builds for all five indexes.
 
 ## Repository layout
 
@@ -40,7 +26,6 @@ ann/
     ├── ann_codecs.py
     ├── pipeline.py
     ├── python_pi.sh
-    ├── requirements.txt
     ├── CMakeLists.txt
     ├── include/
     ├── src/
@@ -51,37 +36,7 @@ ann/
 `ann_codecs.py` locates the sibling package relative to its own file, so the
 repository can have any name and location. Downloading only `CAGRA/` is insufficient.
 
-## Install and build
-
-On Windows, first open Ubuntu under WSL2, for example with
-`wsl -d Ubuntu-24.04` in PowerShell. Run all subsequent commands in Ubuntu Bash.
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential cmake libgomp1 python3 python3-venv python3-pip curl ca-certificates
-```
-
-Ubuntu's GCC provides OpenMP compilation support; `libgomp1` provides its runtime.
-From the cloned repository root:
-
-```bash
-cd CAGRA
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
-cmake --build build -j2
-```
-
-Recreate `.venv` and rebuild on each target machine. Move aside any environment
-copied from another machine before creating a new one. Do not use
-`--system-site-packages`; keep `include-system-site-packages = false` in
-`.venv/pyvenv.cfg`.
-
-The commands below start in `CAGRA/`. Despite its historical name, `python_pi.sh`
-is now a general launcher: it invokes this project's `.venv/bin/python`, clears
-external Python paths and changes into `CAGRA/`. Activation is unnecessary.
-You can invoke the launcher by absolute path from another directory; relative
-arguments will then be interpreted relative to `CAGRA/`.
+The commands below start in `CAGRA/`, after setup and compilation using the [repository root guide](../README.md). `python_pi.sh` uses the repository-root `.venv/bin/python`, clears external environment paths and changes into `CAGRA/`. Relative arguments are interpreted from `CAGRA/`.
 
 ## Synthetic example: no dataset download
 
@@ -101,15 +56,15 @@ Without `--dataset`, preparation generates normal random vectors with seed
 `20261014` and computes exact Top-10 ground truth. This example exercises the
 pipeline; its accuracy and speed do not represent SIFT1M performance.
 
-For an automatic build and run, explicitly select the project interpreter:
+For an automatic build and run, the repository-root virtual environment is used by default. This workflow also runs compilation and tests:
 
 ```bash
-PYTHON="$PWD/.venv/bin/python" DATASET= \
+DATASET= \
 OUTPUT=results/synthetic-next VECTORS=1024 QUERIES=32 WARMUP=20 REPEATS=3 \
 bash run_local.sh
 ```
 
-`run_local.sh` otherwise defaults to `python3`. Outputs must stay inside `CAGRA/`.
+`run_local.sh` uses the repository-root virtual environment unless `PYTHON` is explicitly set. Outputs must stay inside `CAGRA/`.
 Use a new output directory for each experiment; existing experiment, encoding
 and query outputs are not overwritten.
 

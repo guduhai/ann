@@ -50,6 +50,6 @@ ann/
 
 ## 运行依赖与实验数据
 
-NumPy、h5py 通过 [requirements.txt](requirements.txt) 安装；GCC、CMake 和 OpenMP 由目标平台提供。它们是运行或构建依赖，来源和许可分别由各自项目维护。
+NumPy、h5py 及编译工具的统一安装方法见[仓库根目录说明](../README.md)。它们是运行或构建依赖，来源和许可分别由各自项目维护。
 
 SIFT 实验使用 [ANN-Benchmarks](https://github.com/erikbern/ann-benchmarks) 提供的 [SIFT-128 Euclidean HDF5](https://ann-benchmarks.com/sift-128-euclidean.hdf5)。数据集下载地址、输入格式和运行命令见 [README_CN.md](README_CN.md)。数据集及生成的图、编码、实验结果不属于上游源码归档。

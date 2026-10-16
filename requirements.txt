@@ -1,0 +1,8 @@
+# 五种索引及共享量化 Python 工具的统一依赖。
+numpy==1.26.4
+h5py==3.16.0
+psutil==7.2.2
+pybind11>=2.10,<3
+setuptools>=42
+wheel
+# hnswlib 绑定在上述构建依赖装好后，按根目录 README 安装本仓库源码。

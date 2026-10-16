@@ -3,10 +3,10 @@ set -euo pipefail
 
 # 根据脚本位置找到项目，不依赖当前终端目录。
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-venv_python="$root/.venv/bin/python"
+venv_python="$root/../.venv/bin/python"
 
 if [[ ! -x "$venv_python" ]]; then
-  echo "缺少项目虚拟环境，请先在 CAGRA 目录创建 .venv。" >&2
+  echo "缺少仓库根目录的 .venv，请按根目录 README.md 配置统一环境。" >&2
   exit 1
 fi
 

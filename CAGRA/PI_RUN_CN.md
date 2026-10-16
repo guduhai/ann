@@ -1,8 +1,6 @@
 # CAGRA 通用运行入口说明
 
-本文适用于 Ubuntu Linux x86-64、Ubuntu WSL2 和树莓派 Ubuntu ARM64。文件名保留历史名称 `PI_RUN_CN.md`，运行步骤使用当前通用入口，不要求固定的用户名或部署路径。完整安装、算法和数据格式说明见 [README_CN.md](README_CN.md)。
-
-Windows 原生运行和 Android 尚未验证；以下命令在 Linux 或 WSL 的 Bash 中执行。
+文件名保留历史名称 `PI_RUN_CN.md`，运行入口不要求固定用户名或部署路径。统一平台要求、依赖安装和编译见[仓库根目录说明](../README.md)，算法和数据格式见 [README_CN.md](README_CN.md)。以下运行命令在 Linux 或 WSL 的 Bash 中执行。
 
 ## 仓库位置与入口行为
 
@@ -20,33 +18,10 @@ ann/
 ```
 
 - 仓库可以放在任意位置。`ann_codecs.py` 根据自身位置只读加载 `../ann_quantization/codecs.py`，不向共享目录写字节码。
-- `python_pi.sh` 直接调用脚本所在目录的 `.venv/bin/python`，不依赖终端当前激活的 Python，也不设置系统 Python 包路径。
+- `python_pi.sh` 直接调用仓库根目录的 `.venv/bin/python`，不依赖终端当前激活的 Python，也不设置系统 Python 包路径。
 - 入口清除 `PYTHONPATH`、`PYTHONHOME`、`LD_LIBRARY_PATH` 和 `LD_PRELOAD`，关闭用户级 Python 包加载，并设置单线程相关环境变量。
 - 入口切换到 `CAGRA/` 后执行命令，并设置 `TMPDIR=CAGRA/build/tmp`。传入的相对路径相对于 `CAGRA/` 解析；外部数据集建议使用绝对路径。
-- 缺少 `.venv/bin/python` 时，入口会提示创建环境并退出；它不会自动安装依赖。
-
-## 安装环境与编译
-
-需要 Python 3.11 或更新版本（推荐 Python 3.12）、C++17、CMake 3.16 或更新版本，以及 OpenMP。在 Ubuntu 安装工具：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential cmake libgomp1 python3 python3-venv python3-pip
-```
-
-先进入克隆后的仓库根目录，再创建环境、安装依赖并编译：
-
-```bash
-cd CAGRA
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
-cmake --build build -j2
-```
-
-不要复用从另一台机器复制来的 `.venv` 或 CMake 构建缓存；应先移走旧目录，再在目标机器创建和编译。创建虚拟环境时不要使用 `--system-site-packages`，NumPy 和 h5py 都安装到项目 `.venv` 中，无需执行 `activate`。
-
-树莓派 ARM64 使用相同命令在板上编译，不使用 x86-64 构建产物。本项目为 NSG 框架结合 CAGRA 风格剪枝的 CPU 实现，不要求安装 Faiss、CUDA 或 cuVS。
+- 缺少仓库根目录的 `.venv/bin/python` 时，入口会提示创建环境并退出；它不会自动安装依赖。
 
 ## 不下载数据的完整示例
 

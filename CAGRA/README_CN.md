@@ -6,20 +6,7 @@
 
 这是 CPU 上的研究实现，不是 NVIDIA CUDA/cuVS CAGRA。构图和查询不依赖 Faiss，不读取 `.faiss` 索引；量化训练与编码使用本仓库的 `ann_quantization` 和 NumPy。量化查询不执行全精度重排。
 
-## 平台与依赖
-
-面向 Ubuntu Linux x86-64、ARM64，以及 Windows 上的 Ubuntu WSL2。已有实验记录覆盖 Ubuntu 24.04 / WSL x86-64 和树莓派 Ubuntu 24.04 ARM64；Python 环境和 C++ 可执行程序需在目标机器重新创建、编译。
-
-Windows 原生运行和 Android 尚未验证。查询内存统计使用 Linux `/proc/self/status`，测试还使用 `ldd`，因此以下命令应在 Linux 或 WSL 的 Bash 中执行。
-
-| 依赖 | 要求 |
-| --- | --- |
-| Python | 3.11 或更新版本；推荐 Ubuntu 24.04 自带的 Python 3.12 |
-| C++ 编译器 | 支持 C++17 和 OpenMP 的 GCC/G++ |
-| CMake | 3.16 或更新版本 |
-| Python 包 | `requirements.txt` 中的 NumPy、h5py |
-
-无需安装 Faiss、CUDA、cuVS 或 Boost。当前依赖清单使用版本范围，并非锁定环境；跨机器的耗时及浮点结果可能存在差异。
+五种索引和共享量化模块的环境配置、依赖安装及编译统一见[仓库根目录说明](../README.md)。
 
 ## 仓库布局
 
@@ -34,7 +21,6 @@ ann/
     ├── ann_codecs.py
     ├── pipeline.py
     ├── python_pi.sh
-    ├── requirements.txt
     ├── CMakeLists.txt
     ├── include/
     ├── src/
@@ -44,35 +30,7 @@ ann/
 
 `ann_codecs.py` 根据自身位置加载 `../ann_quantization/codecs.py`，不使用固定的树莓派路径。不能仅下载 `CAGRA/` 后遗漏共享量化源码。
 
-## 从零安装
-
-Windows 用户先进入已安装的 Ubuntu WSL2，例如在 PowerShell 中执行 `wsl -d Ubuntu-24.04`。以下安装和运行命令均在 Ubuntu Bash 中执行。
-
-安装工具；Ubuntu 的 GCC 提供 OpenMP 编译支持，`libgomp1` 提供运行库：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential cmake libgomp1 python3 python3-venv python3-pip curl ca-certificates
-```
-
-进入克隆后的仓库根目录，再创建 CAGRA 自己的虚拟环境：
-
-```bash
-cd CAGRA
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-```
-
-如果已有 `.venv` 是从另一台机器复制来的，应先移走，再重新创建。不要使用 `--system-site-packages`；`.venv/pyvenv.cfg` 中的 `include-system-site-packages` 应为 `false`。
-
-编译 C++ 程序：
-
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
-cmake --build build -j2
-```
-
-下面的命令都从 `CAGRA/` 目录执行。`python_pi.sh` 虽然保留历史名称，现在是通用入口：它直接使用脚本所在目录的 `.venv/bin/python`，清除外部 Python 包路径并切换到 `CAGRA/`，无需执行 `activate`。也可通过脚本的绝对路径从其他目录启动；传入的相对文件路径会相对于 `CAGRA/` 解析。
+下面的命令均从 `CAGRA/` 执行。先按[仓库根目录说明](../README.md) 创建根目录 `.venv` 并编译。`python_pi.sh` 使用根目录虚拟环境，清除外部环境路径并切换到 `CAGRA/`；相对参数按 `CAGRA/` 解析。
 
 ## 无需下载数据的合成示例
 
@@ -92,10 +50,10 @@ bash python_pi.sh pipeline.py query --output "$OUT" \
 
 不指定 `--dataset` 时，`prepare` 使用固定随机种子 `20261014` 生成数据并计算精确 Top-10。合成数据用于检查完整流程，不代表 SIFT1M 的召回率或速度。
 
-也可使用 `run_local.sh` 自动编译并运行完整流程。该脚本默认使用 `python3`，因此必须显式指定项目虚拟环境：
+也可使用 `run_local.sh` 自动编译并运行完整流程，默认使用根目录虚拟环境；该流程会执行编译和测试：
 
 ```bash
-PYTHON="$PWD/.venv/bin/python" DATASET= \
+DATASET= \
 OUTPUT=results/synthetic-next VECTORS=1024 QUERIES=32 WARMUP=20 REPEATS=3 \
 bash run_local.sh
 ```
@@ -125,7 +83,7 @@ curl --fail --location --output "$DATASET" \
 
 ANN-Benchmarks 文件中的 `distances` 和其他附加数据集不被本流程读取。输入向量应为有限数值。全量实验直接使用 `neighbors` 的前 10 列；子集实验会重新计算子集的精确 Top-10，不能沿用全量邻居 ID。
 
-完成上面的环境配置、编译和下载后，在同一 Bash 会话中运行：
+完成根目录说明中的环境配置、编译和上述数据下载后，在同一 Bash 会话中运行：
 
 ```bash
 OUT=results/sift1m-m64-pca80

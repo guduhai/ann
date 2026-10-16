@@ -1,3 +1,0 @@
-# Dataset conversion and recall evaluation; native search uses C++.
-numpy==1.26.4
-h5py==3.16.0
