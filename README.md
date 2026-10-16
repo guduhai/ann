@@ -236,9 +236,3 @@ ctest --test-dir CAGRA/build --output-on-failure
 | hnswlib Python 绑定构建缺包 | 先安装根目录 requirements，再按上述命令使用 `--no-build-isolation` 安装仓库自带源码 |
 | 混入其他软件环境的 Python、CMake 或动态库 | 清除外部环境变量，显式使用根目录 `.venv/bin/python`，必要时指定 `/usr/bin/cmake`、`/usr/bin/g++` |
 | Bash 提示 `$'\r'` 等换行错误 | 根目录 `.gitattributes` 已指定 `.sh` 使用 LF；运行时使用更新后的脚本 |
-
-## 来源与产物管理
-
-保留 `vendor/` 中的上游许可证和作者声明。CAGRA 来源见[第三方说明](CAGRA/THIRD_PARTY_NOTICES.md)、[上游版本](CAGRA/UPSTREAM.json)；其他方案见各自 `vendor/versions.json`。
-
-不要提交虚拟环境、构建产物、数据集、大型图索引和实验输出。根目录 `.gitignore` 已覆盖环境及部分输出，提交前仍需留意其他方案的 `indexes/`、`results/` 和根目录 `data/`。
