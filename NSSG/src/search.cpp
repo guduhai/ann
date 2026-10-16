@@ -24,6 +24,9 @@ namespace {
 constexpr uint32_t D = 128, K = 10;
 
 uint32_t parse_uint(const char *value, const char *label) {
+    const std::string text(value);
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error(std::string("Invalid ") + label);
     unsigned long number = std::stoul(value);
     if (number > UINT32_MAX) throw std::runtime_error(std::string("Invalid ") + label);
     return static_cast<uint32_t>(number);
@@ -35,24 +38,26 @@ class Search {
            const std::string &kind, const std::string &prepared,
            const std::string &model, uint32_t width, uint32_t code_size)
         : graph_file_(graph_path), width_(width) {
-        count_ = 1'000'000;
-        if (width_ < K || width_ > count_)
-            throw std::runtime_error("Invalid W");
-        if (kind == "exact") {
-            base_file_ = std::make_unique<ann_quantization::MappedFile>(base_path);
-            if (base_file_->size() != static_cast<size_t>(count_) * (D + 1) * 4)
-                throw std::runtime_error("Expected SIFT1M base");
-            base_ = reinterpret_cast<const float *>(base_file_->data());
-            for (uint32_t i = 0; i < count_; ++i)
-                if (reinterpret_cast<const uint32_t *>(base_)[static_cast<size_t>(i) * (D + 1)] != D)
-                    throw std::runtime_error("Invalid fvecs dimension");
-        }
         if (graph_file_.size() % 4 || graph_file_.size() < 12)
             throw std::runtime_error("Invalid SSG graph size");
         words_ = reinterpret_cast<const uint32_t *>(graph_file_.data());
         const size_t word_count = graph_file_.size() / 4;
         max_degree_ = words_[0];
         uint32_t entry_count = words_[1];
+        if (!entry_count || 2ULL + entry_count > word_count)
+            throw std::runtime_error("Invalid entry count");
+        size_t scan = 2 + entry_count;
+        count_ = 0;
+        while (scan < word_count) {
+            const uint32_t degree = words_[scan++];
+            if (degree > max_degree_ || scan + degree > word_count)
+                throw std::runtime_error("Invalid graph record");
+            scan += degree;
+            if (count_ == UINT32_MAX) throw std::runtime_error("Too many graph nodes");
+            ++count_;
+        }
+        if (scan != word_count || count_ < K || width_ < K || width_ >= count_ || width_ >= INT32_MAX)
+            throw std::runtime_error("Invalid graph node count or W");
         if (!max_degree_ || max_degree_ > count_ || !entry_count ||
             entry_count >= count_ || 2ULL + entry_count > word_count)
             throw std::runtime_error("Invalid SSG graph header");
@@ -76,6 +81,13 @@ class Search {
         }
         if (cursor != word_count) throw std::runtime_error("Trailing SSG graph data");
         if (kind == "exact") {
+            base_file_ = std::make_unique<ann_quantization::MappedFile>(base_path);
+            if (base_file_->size() != static_cast<size_t>(count_) * (D + 1) * 4)
+                throw std::runtime_error("Base count does not match graph");
+            base_ = reinterpret_cast<const float *>(base_file_->data());
+            for (uint32_t i = 0; i < count_; ++i)
+                if (reinterpret_cast<const uint32_t *>(base_)[static_cast<size_t>(i) * (D + 1)] != D)
+                    throw std::runtime_error("Invalid fvecs dimension");
             norms_.resize(count_);
             for (uint32_t i = 0; i < count_; ++i)
                 norms_[i] = distance_.norm(vector(i), D);
@@ -103,6 +115,9 @@ class Search {
         for (size_t i = 0; i < entries_.size(); ++i) initial[i] = entries_[i];
         for (uint32_t i = 0; i < width_; ++i) {
             uint32_t id = initial[i];
+            // Entry points can also occur in the random sample. Keep the
+            // initial pool unique before the traversal's visited checks.
+            while (visited[id]) id = static_cast<uint32_t>(rng()) % count_;
             pool[i] = efanna2e::Neighbor(id, score(id), true);
             visited[id] = true;
         }
@@ -172,15 +187,19 @@ int main(int argc, char **argv) {
         uint32_t count = parse_uint(argv[8], "query count");
         uint32_t warmup = parse_uint(argv[9], "warmup");
         uint32_t repeats = parse_uint(argv[10], "repeats");
-        if (!count || count > 10'000 || !repeats || warmup > 10'000)
+        if (!count || !repeats || warmup > count)
             throw std::runtime_error("Invalid query parameters");
         ann_quantization::MappedFile query_file(argv[3]);
-        if (query_file.size() < static_cast<size_t>(count) * (D + 1) * 4)
-            throw std::runtime_error("Too few SIFT queries");
+        const size_t record_bytes = (D + 1) * sizeof(float);
+        if (query_file.size() % record_bytes || query_file.size() / record_bytes > UINT32_MAX ||
+            query_file.size() / record_bytes < count)
+            throw std::runtime_error("Invalid query file size or query count");
+        const auto *query_words = reinterpret_cast<const uint32_t *>(query_file.data());
+        for (size_t i = 0; i < query_file.size() / record_bytes; ++i)
+            if (query_words[i * (D + 1)] != D)
+                throw std::runtime_error("Invalid query dimension");
         const float *queries = reinterpret_cast<const float *>(query_file.data());
         Search search(argv[1], argv[2], argv[4], argv[5], argv[6], width, parse_uint(argv[12], "code size"));
-        if (search.count() != 10'000 && search.count() != 1'000'000)
-            throw std::runtime_error("Unexpected base count");
 
         auto do_warmup = [&]() {
             // The author's CLI warms queries 0..9 three times.
@@ -218,7 +237,7 @@ int main(int argc, char **argv) {
             std::cout << qpm[i];
         }
         std::cout << "],\"exact_rerank\":false,\"database_float_bytes_loaded\":"
-                  << (std::string(argv[4]) == "exact" ? 512000000 : 0)
+                  << (std::string(argv[4]) == "exact" ? static_cast<uint64_t>(search.count()) * D * 4 : 0)
                   << ",\"code_size\":" << argv[12] << "}\n";
         return 0;
     } catch (const std::exception &error) {

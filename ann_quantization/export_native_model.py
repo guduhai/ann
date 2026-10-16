@@ -1,6 +1,6 @@
 """Export existing Python codec models for read-only native CPU search.
 
-This never refits, re-encodes, copies the million codes, or modifies a graph.
+This never refits, re-encodes, copies codes, or modifies a graph.
 """
 
 from __future__ import annotations
@@ -46,11 +46,12 @@ def main() -> None:
     recorded_hash = manifest.get("index_sha256", manifest.get("graph_sha256"))
     if recorded_hash != args.graph_sha256 or not manifest["search_only"] or manifest["graph_rebuilt"]:
         parser.error("Prepared code does not refer to the approved unchanged graph")
-    if manifest["vectors"] != 1_000_000 or manifest["dimension"] != 128:
-        parser.error("Expected SIFT1M codes")
+    count = manifest["vectors"]
+    if not isinstance(count, int) or not 0 < count <= 0xffffffff or manifest["dimension"] != 128:
+        parser.error("Expected positive vector count and dimension 128")
     codes_path = args.prepared / "codes.npy"
     codes = np.load(codes_path, mmap_mode="r", allow_pickle=False)
-    if len(codes) != 1_000_000 or codes.nbytes != manifest["codes_bytes"]:
+    if len(codes) != count or codes.nbytes != manifest["codes_bytes"]:
         parser.error("Code count or byte size mismatch")
     codec = load_codec(args.prepared)
     arrays = codec.arrays()

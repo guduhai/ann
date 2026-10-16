@@ -1,12 +1,11 @@
 {
   "W": 50,
   "k": 10,
-  "queries": 10000,
+  "queries": 0,
   "warmup": 200,
   "repeats": 1,
   "threads": 1,
   "rerank": false,
-  "database_vectors": 1000000,
   "dimensions": 128,
   "representations": {
     "int8": {

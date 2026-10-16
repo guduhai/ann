@@ -78,26 +78,26 @@ struct Graph {
     MappedFile file;
     uint32_t start = 0, count = 0, max_degree = 0;
     const uint32_t *words = nullptr;
-    std::vector<uint32_t> offsets;
-    Graph(const std::string &path, uint32_t expected_count) : file(path), count(expected_count) {
+    std::vector<size_t> offsets;
+    Graph(const std::string &path) : file(path) {
         if (file.size < 24 || file.size % 4 || u64(file.bytes()) != file.size)
             throw std::runtime_error("Invalid official graph header");
         max_degree = u32(file.bytes() + 8);
         start = u32(file.bytes() + 12);
-        if (start >= count || u64(file.bytes() + 16) != 0)
+        if (u64(file.bytes() + 16) != 0)
             throw std::runtime_error("Unexpected start ID or frozen points");
         words = reinterpret_cast<const uint32_t *>(file.data);
         size_t cursor = 6;
-        offsets.resize(count);
-        for (uint32_t id = 0; id < count; ++id) {
-            if (cursor >= file.size / 4) throw std::runtime_error("Truncated graph");
+        while (cursor < file.size / 4) {
             uint32_t degree = words[cursor];
             if (degree > max_degree || cursor + 1ULL + degree > file.size / 4)
                 throw std::runtime_error("Invalid graph degree");
-            offsets[id] = static_cast<uint32_t>(cursor + 1);
+            if (offsets.size() == UINT32_MAX) throw std::runtime_error("Too many graph nodes");
+            offsets.push_back(cursor + 1);
             cursor += 1ULL + degree;
         }
-        if (cursor != file.size / 4) throw std::runtime_error("Graph has trailing words");
+        count = static_cast<uint32_t>(offsets.size());
+        if (cursor != file.size / 4 || count < 10 || start >= count) throw std::runtime_error("Invalid graph count");
     }
     const uint32_t *neighbors(uint32_t id) const { return words + offsets[id]; }
     uint32_t degree(uint32_t id) const { return words[offsets[id] - 1]; }
@@ -109,12 +109,12 @@ struct Scorer {
     std::unique_ptr<ann_quantization::SearchScorer> codec;
     const float *query = nullptr;
     Scorer(const std::string &kind, const std::string &base_path,
-           const std::string &codes, const std::string &model, uint32_t size) {
+           const std::string &codes, const std::string &model, uint32_t size, uint32_t nodes) {
         if (kind == "exact") {
             base = std::make_unique<FloatBin>(base_path);
-            if (base->count != 1000000) throw std::runtime_error("Expected SIFT1M");
+            if (base->count != nodes) throw std::runtime_error("Base count does not match graph");
         } else {
-            codec = std::make_unique<ann_quantization::SearchScorer>(kind, codes, model, 1000000, size);
+            codec = std::make_unique<ann_quantization::SearchScorer>(kind, codes, model, nodes, size);
         }
     }
     void prepare(const float *q) {
@@ -187,6 +187,14 @@ std::string arg(const std::map<std::string, std::string> &args, const std::strin
     return found->second;
 }
 
+uint32_t number(const std::string &text) {
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error("Expected an unsigned integer");
+    const auto value = std::stoull(text);
+    if (value > UINT32_MAX) throw std::runtime_error("Number outside uint32");
+    return static_cast<uint32_t>(value);
+}
+
 void write_ids(const std::string &path, const std::vector<uint32_t> &ids,
                uint32_t count, uint32_t k) {
     std::ofstream out(path, std::ios::binary);
@@ -203,19 +211,19 @@ int main(int argc, char **argv) {
         auto args = parse_args(argc, argv);
         FloatBin queries(arg(args, "query"));
         if (queries.count < 1)
-            throw std::runtime_error("Expected SIFT1M base and nonempty query fbin");
-        Graph graph(arg(args, "graph"), 1000000);
+            throw std::runtime_error("Expected nonempty query fbin");
+        Graph graph(arg(args, "graph"));
         std::string kind_name = arg(args, "kind");
-        uint32_t l = static_cast<uint32_t>(std::stoul(arg(args, "L")));
-        uint32_t k = static_cast<uint32_t>(std::stoul(arg(args, "K")));
-        uint32_t count = static_cast<uint32_t>(std::stoul(arg(args, "limit")));
-        uint32_t warmup = static_cast<uint32_t>(std::stoul(arg(args, "warmup")));
-        uint32_t repeats = static_cast<uint32_t>(std::stoul(arg(args, "repeats")));
+        uint32_t l = number(arg(args, "L"));
+        uint32_t k = number(arg(args, "K"));
+        uint32_t count = number(arg(args, "limit"));
+        uint32_t warmup = number(arg(args, "warmup"));
+        uint32_t repeats = number(arg(args, "repeats"));
         if (arg(args, "rerank") != "0") throw std::runtime_error("Experiment A forbids rerank");
-        if (!k || k > l || l > graph.count || !count || count > queries.count || !repeats)
+        if (!k || k > l || l > graph.count || !count || count > queries.count || warmup > count || !repeats)
             throw std::runtime_error("Invalid K, L, limit, or repeats");
         Scorer scorer(kind_name, arg(args, "base"), arg(args, "codes"), arg(args, "model"),
-                      static_cast<uint32_t>(std::stoul(arg(args, "size"))));
+                      number(arg(args, "size")), graph.count);
         Searcher searcher(graph, scorer, l);
         for (uint32_t i = 0; i < warmup; ++i)
             searcher.search(queries.row(i % count), l, k);
@@ -240,7 +248,7 @@ int main(int argc, char **argv) {
         std::cout << "{\"kind\":\"" << kind_name << "\",\"L\":" << l
                   << ",\"K\":" << k << ",\"queries\":" << count
                   << ",\"warmup\":" << warmup << ",\"repeats\":" << repeats
-                  << ",\"rerank\":false,\"database_float_bytes_loaded\":" << (kind_name == "exact" ? 512000000 : 0)
+                  << ",\"rerank\":false,\"database_float_bytes_loaded\":" << (kind_name == "exact" ? static_cast<uint64_t>(graph.count) * 128 * 4 : 0)
                   << ",\"code_size\":" << arg(args, "size")
                   << ",\"median_qpm\":" << ordered[ordered.size() / 2] << ",\"qpm\":[";
         for (size_t i = 0; i < qpm.size(); ++i) {

@@ -42,10 +42,10 @@ def export(source, target, expected_hash):
         header = list(HEADER.unpack(read_exact(original, HEADER.size)))
         offset, capacity, count, stride, labels, vectors = header[:6]
         max_m, max_m0 = header[8:10]
-        if (offset != 0 or count != 1_000_000 or capacity != count or
+        if (offset != 0 or count < 10 or capacity != count or
                 vectors != 4 + max_m0 * 4 or labels != vectors + 128 * 4 or
                 stride != labels + 8 or max_m0 != 2 * max_m):
-            raise ValueError("Unsupported original SIFT1M hnswlib layout")
+            raise ValueError("Unsupported original hnswlib layout")
         compact_stride = vectors + 4 + 8
         compact_header = header.copy()
         compact_header[3:5] = [compact_stride, vectors + 4]

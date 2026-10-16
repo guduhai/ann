@@ -26,11 +26,11 @@ def main():
     if args.output.exists():
         parser.error('Use a new output directory; existing prepared models will not be overwritten.')
     graph = HnswGraph(args.index)
-    if graph.dimension != 128 or graph.count != 1000000:
-        parser.error('Expected the full SIFT1M HNSW graph.')
+    if graph.dimension != 128 or graph.count < 256:
+        parser.error('Expected at least 256 vectors of dimension 128.')
     labels = graph.labels.astype(np.int64)
     if not np.array_equal(np.sort(labels), np.arange(graph.count)):
-        raise ValueError('Graph labels must be a permutation of original SIFT IDs.')
+        raise ValueError('Graph labels must be a permutation of original dataset IDs.')
     with args.index.open('rb') as stream:
         graph_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
     plans = [('int8','int8',100000,{}), ('pq64','pq',8192,{'subspaces':64,'centroids':256,'iterations':10}),
@@ -38,6 +38,7 @@ def main():
     args.output.mkdir(parents=True)
     for name,kind,sample_count,options in plans:
         codec = make_codec(kind,128,**options)
+        sample_count = min(sample_count, graph.count)
         ids = np.linspace(0,graph.count-1,sample_count,dtype=np.int32)
         codec.fit(np.asarray(graph.vectors[ids]))
         if kind == 'pca':

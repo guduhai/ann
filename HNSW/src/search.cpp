@@ -49,9 +49,11 @@ class CodeIdSpace : public hnswlib::SpaceInterface<float> {
 
 std::vector<float> load_queries(const std::string &path, uint32_t &rows) {
     std::ifstream source(path, std::ios::binary | std::ios::ate);
-    if (!source || source.tellg() != 10000 * 129 * 4)
-        throw std::runtime_error("Expected all 10000 SIFT query fvecs");
-    rows = 10000;
+    if (!source || source.tellg() <= 0 || source.tellg() % (129 * 4) != 0)
+        throw std::runtime_error("Invalid SIFT query fvecs size");
+    const auto row_count = source.tellg() / (129 * 4);
+    if (row_count > UINT32_MAX) throw std::runtime_error("Too many query rows");
+    rows = static_cast<uint32_t>(row_count);
     source.seekg(0);
     std::vector<float> queries(static_cast<size_t>(rows) * 128);
     for (uint32_t i = 0; i < rows; ++i) {
@@ -65,6 +67,9 @@ std::vector<float> load_queries(const std::string &path, uint32_t &rows) {
 }
 
 uint32_t number(const char *value) {
+    const std::string text(value);
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos)
+        throw std::runtime_error("Expected an unsigned integer");
     const unsigned long result = std::stoul(value);
     if (result > UINT32_MAX) throw std::runtime_error("Number outside uint32");
     return static_cast<uint32_t>(result);
@@ -82,25 +87,30 @@ int main(int argc, char **argv) {
             throw std::runtime_error("Mode/kind mismatch");
         const uint32_t width = number(argv[7]), count = number(argv[8]);
         const uint32_t warmup = number(argv[9]), repeats = number(argv[10]);
-        if (width < 10 || width > 1000000 || !count || count > 10000 || warmup > count || !repeats)
+        if (width < 10 || !count || warmup > count || !repeats)
             throw std::runtime_error("Invalid search parameters");
         uint32_t available;
         const auto queries = load_queries(argv[3], available);
         std::unique_ptr<ann_quantization::SearchScorer> scorer;
-        if (quantized)
-            scorer = std::make_unique<ann_quantization::SearchScorer>(kind, argv[5], argv[6], 1000000, number(argv[12]));
         Context context{scorer.get(), nullptr, compact, 0};
         hnswlib::L2Space float_space(128);
         CodeIdSpace id_space(context);
         Index index(compact ? static_cast<hnswlib::SpaceInterface<float> *>(&id_space) : &float_space, argv[2]);
         context.index = &index;
-        if (index.getCurrentElementCount() != 1000000 || index.num_deleted_ != 0)
-            throw std::runtime_error("Expected one million undeleted graph nodes");
+        if (index.getCurrentElementCount() > UINT32_MAX)
+            throw std::runtime_error("Graph exceeds uint32 node IDs");
+        const uint32_t nodes = static_cast<uint32_t>(index.getCurrentElementCount());
+        if (nodes < 10 || index.num_deleted_ != 0 || width > nodes || count > available)
+            throw std::runtime_error("Invalid graph size or query count");
+        if (quantized) {
+            scorer = std::make_unique<ann_quantization::SearchScorer>(kind, argv[5], argv[6], nodes, number(argv[12]));
+            context.scorer = scorer.get();
+        }
         const size_t payload_bytes = index.label_offset_ - index.offsetData_;
         if (payload_bytes != (compact ? 4 : 128 * 4))
             throw std::runtime_error("Wrong original/compact index payload layout");
         if (compact) {
-            for (uint32_t i = 0; i < 1000000; ++i) {
+            for (uint32_t i = 0; i < nodes; ++i) {
                 uint32_t stored;
                 std::memcpy(&stored, index.getDataByInternalId(i), sizeof(stored));
                 if (stored != i) throw std::runtime_error("Internal code ID mismatch");
@@ -150,10 +160,10 @@ int main(int argc, char **argv) {
                   << "{\"mode\":\"" << mode << "\",\"kind\":\"" << kind
                   << "\",\"W\":" << width << ",\"queries\":" << count
                   << ",\"code_size\":" << number(argv[12]) << ",\"warmup\":" << warmup << ",\"repeats\":" << repeats
-                  << ",\"exact_rerank\":false,\"database_float_bytes_loaded\":" << (compact ? 0 : 512000000)
+                  << ",\"exact_rerank\":false,\"database_float_bytes_loaded\":" << (compact ? 0ULL : static_cast<uint64_t>(nodes) * 128 * 4)
                   << ",\"index_record_bytes\":" << index.size_data_per_element_
                   << ",\"peak_rss_kib\":" << resources.ru_maxrss
-                  << ",\"score_calls_per_query\":" << double(context.calls) / (count * repeats)
+                  << ",\"score_calls_per_query\":" << double(context.calls) / (double(count) * repeats)
                   << ",\"median_qpm\":" << ordered[ordered.size() / 2] << ",\"qpm\":[";
         for (size_t i = 0; i < qpm.size(); ++i) {
             if (i) std::cout << ',';
