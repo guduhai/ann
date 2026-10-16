@@ -1,0 +1,21 @@
+# Keep the search executable name used by existing experiments, plus a common entry.
+add_custom_command(TARGET nssg_search POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:nssg_search>" "${CMAKE_BINARY_DIR}/bin/ann_query")
+find_package(OpenMP REQUIRED)
+add_executable(ann_knn vendor/efanna_graph/tests/test_nndescent.cpp
+    vendor/efanna_graph/src/index.cpp vendor/efanna_graph/src/index_graph.cpp vendor/efanna_graph/src/index_random.cpp)
+target_include_directories(ann_knn PRIVATE vendor/efanna_graph/include vendor/deps/include)
+add_executable(ann_build vendor/ssg/tests/test_ssg_index.cpp vendor/ssg/src/index.cpp vendor/ssg/src/index_random.cpp vendor/ssg/src/index_ssg.cpp vendor/ssg/src/util.cpp)
+target_include_directories(ann_build PRIVATE vendor/ssg/include vendor/deps/include)
+add_executable(ann_query_official vendor/ssg/tests/test_ssg_optimized_search.cpp vendor/ssg/src/index.cpp vendor/ssg/src/index_random.cpp vendor/ssg/src/index_ssg.cpp vendor/ssg/src/util.cpp)
+target_include_directories(ann_query_official PRIVATE vendor/ssg/include vendor/deps/include)
+foreach(target IN ITEMS ann_knn ann_build ann_query_official)
+    target_compile_definitions(${target} PRIVATE INFO)
+    target_compile_options(${target} PRIVATE -O3)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        target_compile_options(${target} PRIVATE -mcpu=native)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        target_compile_options(${target} PRIVATE -march=native)
+    endif()
+    target_link_libraries(${target} PRIVATE OpenMP::OpenMP_CXX)
+endforeach()

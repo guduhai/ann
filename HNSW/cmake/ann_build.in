@@ -1,0 +1,5 @@
+#!@Python3_EXECUTABLE@
+import runpy,sys
+sys.dont_write_bytecode=True
+sys.argv.insert(1,"build")
+runpy.run_path("@CMAKE_SOURCE_DIR@/src/benchmark.py",run_name="__main__")

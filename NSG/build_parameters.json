@@ -1,0 +1,11 @@
+{
+  "K": 200,
+  "L": 200,
+  "iterations": 10,
+  "S": 10,
+  "R": 100,
+  "graph_L": 40,
+  "graph_R": 50,
+  "graph_C": 500,
+  "threads": 4
+}

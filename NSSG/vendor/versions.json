@@ -3,5 +3,9 @@
     "repository": "https://github.com/ZJULearning/SSG",
     "commit": "f57304152a942fb572662136ca4d74a4971ebcd1"
   },
-  "portability": "Preserve the previously validated ARM64 conditional includes and SIMDe compatibility headers. Graph construction and traversal algorithms are unchanged."
+  "portability": "Preserve the previously validated ARM64 conditional includes and SIMDe compatibility headers. Graph construction and traversal algorithms are unchanged.",
+  "efanna_graph": {
+    "repository": "https://github.com/ZJULearning/efanna_graph",
+    "commit": "6d741ad44a3c565507f86d955917dc028ffe67bc"
+  }
 }

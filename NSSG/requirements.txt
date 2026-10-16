@@ -1,1 +1,2 @@
-# Search launcher uses the Python standard library only.
+# Recall evaluation; native build and search use C++.
+numpy==1.26.4
