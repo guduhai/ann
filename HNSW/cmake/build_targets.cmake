@@ -1,7 +1,12 @@
 # Keep the search executable name used by existing experiments, plus a common entry.
 add_custom_command(TARGET hnsw_search POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:hnsw_search>" "${CMAKE_BINARY_DIR}/bin/ann_query")
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
-configure_file(cmake/ann_build.in "${CMAKE_BINARY_DIR}/bin/ann_build" @ONLY)
-file(CHMOD "${CMAKE_BINARY_DIR}/bin/ann_build" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-add_custom_target(ann_build ALL DEPENDS "${CMAKE_BINARY_DIR}/bin/ann_build")
+add_executable(ann_build src/build.cpp)
+target_include_directories(ann_build SYSTEM PRIVATE vendor/hnswlib)
+target_compile_options(ann_build PRIVATE -O3 -pthread)
+target_link_libraries(ann_build PRIVATE pthread)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+    target_compile_options(ann_build PRIVATE -mcpu=native)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_compile_options(ann_build PRIVATE -march=native)
+endif()

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data', type=Path, required=True,
-                        help='HNSW: HDF5; NSG/NSSG: base fvecs; VAMANA: base fbin')
+                        help='HNSW/NSG/NSSG: base fvecs; VAMANA: base fbin')
     parser.add_argument('--output', type=Path, required=True, help='New build output directory')
     parser.add_argument('--execute', action='store_true')
     args = parser.parse_args()
