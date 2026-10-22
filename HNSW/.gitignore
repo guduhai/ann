@@ -39,3 +39,6 @@ Thumbs.db
 
 *.egg-info/
 /dist/
+
+# Legacy build trees retained locally until validation is complete.
+/build-*/
