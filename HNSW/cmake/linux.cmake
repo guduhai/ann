@@ -1,0 +1,12 @@
+# Linux native builds, including Raspberry Pi. Android never uses these flags.
+find_package(Threads REQUIRED)
+add_library(ann_platform INTERFACE)
+target_link_libraries(ann_platform INTERFACE Threads::Threads)
+option(ANN_NATIVE_CPU "Optimize for the build machine (disable when cross-compiling)" ON)
+if(ANN_NATIVE_CPU AND NOT CMAKE_CROSSCOMPILING)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        target_compile_options(ann_platform INTERFACE -mcpu=native)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        target_compile_options(ann_platform INTERFACE -march=native)
+    endif()
+endif()

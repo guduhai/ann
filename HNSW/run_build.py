@@ -8,26 +8,29 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+from src.execution import Runtime, add_execution_arguments
 
 ROOT = Path(__file__).resolve().parent
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--data', type=Path, required=True,
+    parser.add_argument('--data', required=True,
                         help='HNSW/NSG/NSSG: base fvecs; VAMANA: base fbin')
-    parser.add_argument('--output', type=Path, required=True, help='New build output directory')
+    parser.add_argument('--output', required=True, help='New build output directory')
     parser.add_argument('--execute', action='store_true')
+    add_execution_arguments(parser)
     args = parser.parse_args()
+    runtime = Runtime(ROOT, args)
     params = json.loads((ROOT / 'build_parameters.json').read_text())
     index = json.loads((ROOT / 'experiment.json').read_text())['index']
-    output = args.output.resolve()
-    data = args.data.resolve()
-    binary = ROOT / 'build/bin'
-    if output.exists():
-        parser.error('Output directory already exists; choose a new directory.')
-    if not data.is_file():
-        parser.error('Input data file does not exist.')
+    try:
+        output = runtime.path(args.output)
+        data = runtime.path(args.data)
+        binary = runtime.binary_dir()
+        runtime.check_build(data, output)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        parser.error(str(error))
     if index == 'HNSW':
         commands = [[binary / 'ann_build', '--dataset', data,
                      '--index', output / 'hnsw-1m.bin', '--result', output / 'build.json',
@@ -50,13 +53,12 @@ def main():
                      '-T', params['threads'], '--build_PQ_bytes', 0]]
     commands = [[str(x) for x in command] for command in commands]
     for command in commands:
-        print(shlex.join(command), flush=True)
+        print(shlex.join(runtime.wrapped(command, params['threads'])), flush=True)
     if args.execute:
-        output.mkdir(parents=True, exist_ok=False)
-        environment = dict(os.environ, OMP_NUM_THREADS=str(params['threads']),
-                           OPENBLAS_NUM_THREADS='1', PYTHONDONTWRITEBYTECODE='1', LC_ALL='C')
-        for command in commands:
-            subprocess.run(command, env=environment, check=True)
+        try:
+            runtime.execute(commands, output, params['threads'], build=True)
+        except (ValueError, OSError, subprocess.CalledProcessError) as error:
+            parser.error(str(error))
 
 
 if __name__ == '__main__':

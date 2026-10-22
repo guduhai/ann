@@ -7,10 +7,13 @@
 #include <fstream>
 #include <iostream>
 #include <random>
+#include <new>
+#include <stdexcept>
 
 namespace efanna2e {
 
 void GenRandom(std::mt19937& rng, unsigned* addr, unsigned size, unsigned N) {
+  if (!N || size >= N) throw std::invalid_argument("GenRandom requires size < N and N > 0");
   for (unsigned i = 0; i < size; ++i) {
     addr[i] = rng() % (N - size);
   }
@@ -71,10 +74,11 @@ float* data_align(float* data_ori, unsigned point_num, unsigned& dim) {
   data_new = new float[(size_t)new_dim * (size_t)point_num];
 #else
   data_new =
-      (float*)memalign(DATA_ALIGN_FACTOR * 4,
+      (float*)memalign(std::max<size_t>(DATA_ALIGN_FACTOR * 4, sizeof(void*)),
                        (size_t)point_num * (size_t)new_dim * sizeof(float));
 #endif
 
+  if (!data_new) throw std::bad_alloc();
   for (size_t i = 0; i < point_num; i++) {
     memcpy(data_new + i * new_dim, data_ori + i * dim, dim * sizeof(float));
     memset(data_new + i * new_dim + dim, 0, (new_dim - dim) * sizeof(float));
@@ -82,11 +86,8 @@ float* data_align(float* data_ori, unsigned point_num, unsigned& dim) {
 
   dim = new_dim;
 
-#ifdef __APPLE__
+  // load_data allocates the source with new[] on every platform.
   delete[] data_ori;
-#else
-  free(data_ori);
-#endif
 
   return data_new;
 }

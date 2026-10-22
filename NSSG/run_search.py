@@ -13,31 +13,13 @@ from pathlib import Path
 import shlex
 import struct
 import subprocess
+from src.execution import Runtime, add_execution_arguments
 
 ROOT = Path(__file__).resolve().parent
 REPRESENTATIONS = {
     "exact": ("exact", 0), "int8": ("int8", 128), "pq64": ("pq", 64),
     "pca80": ("pca", 80), "local": ("local", 129),
 }
-
-
-def query_rows(path: Path, index: str) -> int:
-    size = path.stat().st_size
-    with path.open("rb") as source:
-        if index == "VAMANA":
-            header = source.read(8)
-            if len(header) != 8:
-                raise ValueError("Truncated query fbin header")
-            count, dimension = struct.unpack("<II", header)
-            valid = dimension == 128 and size == 8 + count * dimension * 4
-        else:
-            header = source.read(4)
-            dimension = struct.unpack("<I", header)[0] if len(header) == 4 else 0
-            count = size // (129 * 4)
-            valid = dimension == 128 and size % (129 * 4) == 0
-    if not valid or not 0 < count <= 0xffffffff:
-        raise ValueError("Expected a nonempty 128-dimensional query file with complete records")
-    return count
 
 
 def uint(value: int, name: str, minimum: int = 0) -> int:
@@ -47,6 +29,7 @@ def uint(value: int, name: str, minimum: int = 0) -> int:
 
 
 def make_command(args: argparse.Namespace) -> list[str]:
+    runtime = Runtime(ROOT, args)
     config_path = args.config.resolve() if args.config else ROOT / "experiment.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     index = config["index"]
@@ -55,19 +38,26 @@ def make_command(args: argparse.Namespace) -> list[str]:
     if config.get("k", 10) != 10 or config.get("threads", 1) != 1 or config.get("rerank", False):
         raise ValueError("This launcher requires Top-10, one search thread and no rerank")
     kind, size = REPRESENTATIONS[args.method]
-    output = (ROOT / args.output).resolve()
-    if not output.is_relative_to((ROOT / "results").resolve()):
-        raise ValueError("Output must be inside this index's results directory")
+    output = runtime.output(args.output)
+    if runtime.android:
+        required = ['graph', 'query']
+        if args.method == 'exact' and index != 'HNSW':
+            required.append('base')
+        if args.method != 'exact':
+            required.extend(['codes', 'model'])
+        for name in required:
+            if not getattr(args, name):
+                raise ValueError('Android requires explicit --' + name + ' device path')
     compact = index == "HNSW" and args.method != "exact"
     graph_key = "compact_graph" if compact else "graph"
-    graph = args.graph.resolve() if args.graph else ROOT / config["graph"][graph_key]
+    graph = runtime.path(args.graph) if args.graph else ROOT / config["graph"][graph_key]
     shared = ROOT.parent / "ann_quantization/prepared" / args.method
     codes_default = ROOT.parent / "ann_quantization/prepared/hnsw-order" / args.method if compact else shared
-    codes = args.codes.resolve() if args.codes else codes_default
-    model = args.model.resolve() if args.model else shared / "native"
+    codes = runtime.path(args.codes) if args.codes else codes_default
+    model = runtime.path(args.model) if args.model else shared / "native"
     query_default = ROOT.parent / "data/sift1M" / ("sift1m_query.fbin" if index == "VAMANA" else "sift_query.fvecs")
-    query = args.query.resolve() if args.query else query_default
-    available = query_rows(query, index)
+    query = runtime.path(args.query) if args.query else query_default
+    available = runtime.query_rows(query, index)
     requested = uint(args.queries if args.queries is not None else config.get("queries", 0), "queries")
     count = available if requested == 0 else requested
     if count > available:
@@ -79,12 +69,12 @@ def make_command(args: argparse.Namespace) -> list[str]:
     if warmup > count:
         raise ValueError("warmup must not exceed the chosen query count")
     base_default = ROOT.parent / "data/sift1M" / ("sift1m_base.fbin" if index == "VAMANA" else "sift_base.fvecs")
-    base = args.base.resolve() if args.base else base_default
+    base = runtime.path(args.base) if args.base else base_default
     if args.method != "exact":
-        base = ROOT / "NO_FLOAT_DATABASE"
-        if base.exists():
+        base = runtime.device_root / "NO_FLOAT_DATABASE" if runtime.android else ROOT / "NO_FLOAT_DATABASE"
+        if not runtime.android and base.exists():
             raise ValueError("The no-float sentinel path must not exist")
-    binary = ROOT / "build/bin" / f"{index.lower()}_search"
+    binary = runtime.binary_dir() / f"{index.lower()}_search"
     common = [width, count, warmup, repeats, output, size]
     if index == "HNSW":
         command = [binary, "compact" if compact else "float", graph, query, kind, codes, model, *common]
@@ -101,30 +91,28 @@ def make_command(args: argparse.Namespace) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--method", choices=list(REPRESENTATIONS), required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", required=True)
     parser.add_argument("--config", type=Path, help="Experiment JSON; defaults to this index's experiment.json")
-    parser.add_argument("--graph", type=Path, help="HNSW quantized methods require a compact graph")
-    parser.add_argument("--base", type=Path, help="Float32 baseline only; ignored by quantized methods")
-    parser.add_argument("--query", type=Path, help="Query fvecs (VAMANA: fbin)")
-    parser.add_argument("--codes", type=Path, help="Method directory containing codes.npy")
-    parser.add_argument("--model", type=Path, help="Method directory containing native model .bin files")
+    parser.add_argument("--graph", help="HNSW quantized methods require a compact graph")
+    parser.add_argument("--base", help="Float32 baseline only; ignored by quantized methods")
+    parser.add_argument("--query", help="Query fvecs (VAMANA: fbin)")
+    parser.add_argument("--codes", help="Method directory containing codes.npy")
+    parser.add_argument("--model", help="Method directory containing native model .bin files")
     parser.add_argument("--queries", type=int, help="0 selects all query rows; otherwise select the first N")
     parser.add_argument("--W", "--search-l", dest="width", type=int)
     parser.add_argument("--warmup", type=int)
     parser.add_argument("--repeats", type=int)
     parser.add_argument("--execute", action="store_true")
+    add_execution_arguments(parser)
     args = parser.parse_args()
     try:
         command = make_command(args)
-        print(shlex.join(command), flush=True)
+        runtime = Runtime(ROOT, args)
+        print(shlex.join(runtime.wrapped(command, 1)), flush=True)
         if args.execute:
-            output = (ROOT / args.output).resolve()
-            if output.exists():
-                raise ValueError("Refusing to overwrite an existing result file")
-            output.parent.mkdir(parents=True, exist_ok=True)
-            environment = dict(os.environ, OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", LC_ALL="C")
-            subprocess.run(command, env=environment, check=True)
-    except (ValueError, KeyError, OSError) as error:
+            runtime.execute([command], runtime.output(args.output), 1)
+
+    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
 
 

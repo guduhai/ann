@@ -173,6 +173,7 @@ void IndexSSG::init_graph(const Parameters &parameters) {
   // ep_ = rand() % nd_;  // random initialize navigating point
   get_neighbors(center, parameters, tmp, pool);
   ep_ = tmp[0].id;  // For Compatibility
+  delete[] center;
 }
 
 void IndexSSG::sync_prune(unsigned q, std::vector<Neighbor> &pool,
@@ -406,6 +407,7 @@ void IndexSSG::Build(size_t n, const float *data,
   */
 
   has_built = true;
+  delete[] cut_graph_;
 }
 
 void IndexSSG::Search(const float *query, const float *x, size_t K,

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <boost/dynamic_bitset.hpp>
+#include <cstdlib>
 
 #include "efanna2e/exceptions.h"
 #include "efanna2e/parameters.h"
@@ -25,7 +26,7 @@ IndexNSG::~IndexNSG() {
         initializer_ = nullptr;
     }
     if (opt_graph_ != nullptr) {
-        delete opt_graph_;
+        std::free(opt_graph_);
         opt_graph_ = nullptr;
     }
 }
@@ -236,7 +237,7 @@ void IndexNSG::init_graph(const Parameters &parameters) {
   ep_ = rand() % nd_;  // random initialize navigating point
   get_neighbors(center, parameters, tmp, pool);
   ep_ = tmp[0].id;
-  delete center;
+  delete[] center;
 }
 
 void IndexNSG::sync_prune(unsigned q, std::vector<Neighbor> &pool,
@@ -436,7 +437,7 @@ void IndexNSG::Build(size_t n, const float *data, const Parameters &parameters) 
   printf("Degree Statistics: Max = %d, Min = %d, Avg = %d\n", max, min, avg);
 
   has_built = true;
-  delete cut_graph_;
+  delete[] cut_graph_;
 }
 
 void IndexNSG::Search(const float *query, const float *x, size_t K,
