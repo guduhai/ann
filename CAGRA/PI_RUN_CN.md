@@ -1,88 +1,78 @@
-# CAGRA 通用运行入口说明
+# CAGRA 本机数据准备与完整流程
 
-文件名保留历史名称 `PI_RUN_CN.md`，运行入口不要求固定用户名或部署路径。统一平台要求、依赖安装和编译见[仓库根目录说明](../README.md)，算法和数据格式见 [README_CN.md](README_CN.md)。以下运行命令在 Linux 或 WSL 的 Bash 中执行。
+文件名保留历史名称；本页适用于 Linux、WSL 和树莓派。环境依赖按仓库根目录 README 安装，平台编译及已有 fvecs/编码的运行方法见 [BUILDING.md](BUILDING.md)。Android 不运行本页的 Python 数据准备流程，直接使用已有数据和共享编码。
 
-## 仓库位置与入口行为
+## 编译与入口
 
-克隆完整的 `ann` 仓库，保留 `CAGRA/` 和 `ann_quantization/` 同级：
+克隆完整仓库，保留 `CAGRA/` 与 `ann_quantization/` 同级。以下命令从 `CAGRA/` 执行：
 
-```text
-ann/
-├── ann_quantization/
-│   ├── __init__.py
-│   └── codecs.py
-└── CAGRA/
-    ├── ann_codecs.py
-    ├── python_pi.sh
-    └── pipeline.py
+```bash
+cmake -S . -B build/linux-arm64 -DCMAKE_BUILD_TYPE=Release
+cmake --build build/linux-arm64 -j2
 ```
 
-- 仓库可以放在任意位置。`ann_codecs.py` 根据自身位置只读加载 `../ann_quantization/codecs.py`，不向共享目录写字节码。
-- `python_pi.sh` 直接调用仓库根目录的 `.venv/bin/python`，不依赖终端当前激活的 Python，也不设置系统 Python 包路径。
-- 入口清除 `PYTHONPATH`、`PYTHONHOME`、`LD_LIBRARY_PATH` 和 `LD_PRELOAD`，关闭用户级 Python 包加载，并设置单线程相关环境变量。
-- 入口切换到 `CAGRA/` 后执行命令，并设置 `TMPDIR=CAGRA/build/tmp`。传入的相对路径相对于 `CAGRA/` 解析；外部数据集建议使用绝对路径。
-- 缺少仓库根目录的 `.venv/bin/python` 时，入口会提示创建环境并退出；它不会自动安装依赖。
+`linux-arm64` 是目录名称，在 WSL 可改为 `linux-x86_64`，并同步修改下方 `BIN`。安装系统 `time` 软件包后，构图/查询入口会记录进程耗时和峰值内存。
 
-## 不下载数据的完整示例
+`python_pi.sh` 根据自身位置调用根目录 `.venv/bin/python`，清除外部 Python/动态库路径并关闭字节码写入。它切换到 `CAGRA/` 执行，相对路径按该目录解释。其 `OMP_NUM_THREADS=1` 不限制构图：C++ 构图入口会显式设置 `--threads` 指定的线程数，默认 4。
 
-以下命令均从 `CAGRA/` 执行，输出目录须尚不存在：
+## SIFT1M 全量流程
+
+将 `DATASET` 替换为已有 HDF5 文件的绝对路径；需要下载时可使用 [ANN-Benchmarks SIFT](https://ann-benchmarks.com/sift-128-euclidean.hdf5)。输出目录必须尚不存在：
+
+```bash
+DATASET=/absolute/path/sift-128-euclidean.hdf5
+OUT=results/sift1m-m64-pca80
+BIN=build/linux-arm64/bin
+
+bash python_pi.sh pipeline.py prepare --output "$OUT" \
+  --dataset "$DATASET" --vectors 0 --queries 10000
+bash python_pi.sh pipeline.py build --output "$OUT" --bin "$BIN" \
+  --threads 4 --gk 64 --knn-l 80 --iterations 8 --sample 10 --reverse 100 \
+  --degree 32 --build-l 64 --build-c 132
+bash python_pi.sh pipeline.py encode --output "$OUT" \
+  --train 10000 --pca-dim 80 --pq-m 64 --codec-iterations 10
+bash python_pi.sh pipeline.py query --output "$OUT" --bin "$BIN" \
+  --methods float32,int8,pca,pq,local --search-l 50 --warmup 200 --repeats 3
+```
+
+PQ 固定每个子空间 256 个码字，Local 固定 32 个簇，与共享原生评分器一致。仅支持 128 维输入；`--pq-m` 必须整除 128，`--pca-dim` 为 1–128。训练样本至少 256 条。
+
+构图与训练需要额外内存，底库、中间图、模型和编码需要数 GB 磁盘。构图配置 4 线程，其中反向边更新和连通性修复仍串行；查询保持单线程、无全精度重排。
+
+需要小规模数据时，在新输出目录准备 `--vectors 20000 --queries 500`，其余阶段不变。子集真值会针对实际底库重新计算。已有全量真值不能直接用于底库子集。
+
+## 无需下载的示例
+
+以下生成固定种子的合成数据并计算 Top-10，展示完整流程，不代表 SIFT 性能：
 
 ```bash
 OUT=results/synthetic-1024
+BIN=build/linux-arm64/bin
 bash python_pi.sh pipeline.py prepare --output "$OUT" \
-  --vectors 1024 --queries 32 --dim 128
-bash python_pi.sh pipeline.py build --output "$OUT"
+  --vectors 1024 --queries 32
+bash python_pi.sh pipeline.py build --output "$OUT" --bin "$BIN" --threads 4
 bash python_pi.sh pipeline.py encode --output "$OUT" \
-  --train 1024 --pca-dim 80 --pq-m 64 --pq-k 256 \
-  --clusters 32 --codec-iterations 10
-bash python_pi.sh pipeline.py query --output "$OUT" \
-  --search-l 20,50,100,200 --warmup 20 --repeats 3
+  --train 1024 --pca-dim 80 --pq-m 64 --codec-iterations 10
+bash python_pi.sh pipeline.py query --output "$OUT" --bin "$BIN" \
+  --search-l 50 --warmup 20 --repeats 3
 ```
 
-`prepare` 未指定 `--dataset` 时生成固定种子的合成数据，并计算精确 Top-10；该示例用于演示完整流程，不代表 SIFT1M 性能。
+## 产物与再次查询
 
-## SIFT1M 全量实验
+所有辅助流程产物均在 `CAGRA/results/` 内：
 
-先按 [README_CN.md](README_CN.md) 下载 ANN-Benchmarks 的 `sift-128-euclidean.hdf5`。下面使用与 README 相同的缓存位置；若数据集位于其他位置，将 `DATASET` 改为该文件的绝对路径。
+- `base.f32`、`queries.f32`、`truth.i32`、`dataset.json`：数据矩阵、真值与哈希。
+- `graph/candidate.knn`、`graph/final.graph`：候选图与原生邻接图。
+- `graph/knn.stdout`、`graph/knn.time`、`graph/build.stdout`、`graph/build.time`、`build.json`：构图日志、时间/内存和参数。
+- `codecs/<method>/codes.npy`、`native/*.bin`、`codec.json`、`codec.npz`：共享编码和模型。
+- `codecs/manifest.json`：图、编码及模型校验信息。
+- `query-results/summary.json`、`query-results/RESULTS_CN.md`：指标与结果表；每组另有 `.json/.labels/.stdout/.time`。
 
-```bash
-DATASET="${XDG_CACHE_HOME:-$HOME/.cache}/ann-datasets/sift-128-euclidean.hdf5"
-OUT=results/sift1m-m64-pca80
-bash python_pi.sh pipeline.py prepare --output "$OUT" \
-  --dataset "$DATASET" --vectors 0 --queries 10000
-bash python_pi.sh pipeline.py build --output "$OUT" \
-  --gk 64 --knn-l 80 --iterations 8 --sample 10 --reverse 100 \
-  --degree 32 --build-l 64 --build-c 132
-bash python_pi.sh pipeline.py encode --output "$OUT" \
-  --train 10000 --pca-dim 80 --pq-m 64 --pq-k 256 \
-  --clusters 32 --codec-iterations 10
-bash python_pi.sh pipeline.py query --output "$OUT" \
-  --methods float32,int8,pca,pq,local \
-  --search-l 20,50,100,200 --warmup 200 --repeats 3
-```
-
-完整建图当前为单线程，底库、中间图和五种表示会占用数 GB 磁盘，构图和训练还需要额外内存。资源有限时可选择新输出目录，先以 `--vectors 20000 --queries 500` 准备 SIFT 子集。输出必须位于 `CAGRA/` 内，不覆盖已有实验。
-
-128 维 SIFT 可以使用 PQ M64；96 维输入应显式使用兼容的子空间数，例如 `--pq-m 32`。训练样本数不能少于 PQ 码字数或 Local 簇数。
-
-## 复用已有图和编码
-
-已有实验的 `index.graph`、`codecs/`、输入查询和清单完整保留时，可以只执行查询。将 `OUT` 设为该实验目录，并选择尚不存在的 `--run-name`：
+复用本次新格式的图和编码时，指定尚不存在的结果子目录：
 
 ```bash
-bash python_pi.sh pipeline.py query --output "$OUT" \
+bash python_pi.sh pipeline.py query --output "$OUT" --bin "$BIN" \
   --run-name query-next --search-l 20,50,100,200 --warmup 20 --repeats 3
 ```
 
-`--warmup` 不得超过实际查询条数；上例适用于本文的 32 条合成查询或 10,000 条 SIFT 查询。更改训练或编码参数时，应在新的实验目录重新生成所需产物。
-
-## 历史树莓派结果
-
-历史 ARM64 SIFT1M 实验目录为 `results/sift1m-m64-pca80-run1/`，对应 100 万条底库向量、10,000 条查询。若本地仍保留，可查看：
-
-- `index.graph`、`build.json`：图及构图记录。
-- `codecs/`、`codecs/manifest.json`：编码与清单。
-- `query-results/summary.json`：平台、查询程序哈希和各组原始指标。
-- `query-results/RESULTS_CN.md`：可读结果表。
-
-这些生成文件被 Git 忽略，不是克隆源码后自带的产物。旧报告中的固定平台措辞以 `summary.json` 的 `machine`、`platform` 字段为准。历史部署环境与当前通用入口配置应分别看待。
+`--warmup` 不得超过实际查询条数。更改训练/编码参数请使用新的实验目录。本页流程与历史 CSR / `EGCODE01` 编码不兼容；历史报告可保留，但旧产物不能直接交给新入口。所有生成产物均被 Git 忽略。

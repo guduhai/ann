@@ -1,7 +1,6 @@
 build*/
 results/
 logs/
-.venv/
+.deps/
 __pycache__/
-*.log
 *.py[cod]

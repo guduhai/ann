@@ -1,0 +1,13 @@
+{
+  "index": "CAGRA",
+  "k": 10,
+  "W": 50,
+  "queries": 0,
+  "warmup": 200,
+  "repeats": 3,
+  "threads": 1,
+  "rerank": false,
+  "pq_m": 64,
+  "pca_dimension": 80,
+  "graph_format": "native adjacency"
+}

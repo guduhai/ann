@@ -1,166 +1,149 @@
 #include "io.h"
-#include "distance_kernels.h"
+#include <ann_quantization/native_search_scorer.hpp>
+#include <algorithm>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <numeric>
 #include <sstream>
-#include <sys/resource.h>
 
-static uint64_t process_peak_rss() {
-    // VmHWM belongs to the current exec image. ru_maxrss may include the
-    // Python parent's inherited high-water mark from before exec.
-    std::ifstream status("/proc/self/status");std::string line;
-    while(std::getline(status,line)) if(line.rfind("VmHWM:",0)==0){
-        std::istringstream s(line.substr(6));uint64_t kib;need(bool(s>>kib),"Invalid VmHWM");return kib*1024;
-    }
-    throw std::runtime_error("VmHWM unavailable on this Linux host");
-}
-
+// Shared Linux/Android query: native NSG adjacency, no CSR conversion.
+struct Row { std::vector<uint32_t> ids; };
 struct Graph {
-    uint32_t n,d,entry;std::vector<uint64_t> offsets;std::vector<uint32_t> ids;
-    explicit Graph(const std::string& path) {
-        std::ifstream f(path,std::ios::binary);need(bool(f),"Cannot open graph");magic(f,"EGCSR001");
-        n=read_one<uint32_t>(f);d=read_one<uint32_t>(f);entry=read_one<uint32_t>(f);
-        need(read_one<uint32_t>(f)==0,"Unknown graph flags");auto edges=read_one<uint64_t>(f);
-        need(n>0 && n<2147483647 && entry<n && d>0 && d<=65536,"Invalid graph header");
-        need(edges<=uint64_t(n)*n && edges <= (std::filesystem::file_size(path)/4),"Invalid edge count");
-        need(std::filesystem::file_size(path)==32+(uint64_t(n)+1)*8+edges*4,"Invalid graph size");
-        offsets=read_array<uint64_t>(f,size_t(n)+1);ids=read_array<uint32_t>(f,edges);
-        need(offsets[0]==0 && offsets[n]==edges,"Invalid offsets");
-        for(size_t i=0;i<n;++i) need(offsets[i]<=offsets[i+1] && offsets[i+1]<=edges,"Invalid offset order");
-        for(auto id:ids) need(id<n,"Invalid neighbor ID");
-    }
-    size_t bytes() const {return offsets.size()*8+ids.size()*4;}
-};
-
-struct Codec {
-    Config c; std::vector<float> floats,scale,mean,basis,books,centers;std::vector<uint8_t> bytes;
-    explicit Codec(const std::string& path) {
-        std::ifstream f(path,std::ios::binary);need(bool(f),"Cannot open codec");magic(f,"EGCODE01");
-        c.n=read_one<uint32_t>(f);c.d=read_one<uint32_t>(f);c.mode=read_one<uint32_t>(f);
-        c.width=read_one<uint32_t>(f);c.centroids=read_one<uint32_t>(f);c.clusters=read_one<uint32_t>(f);
-        need(c.n>0 && c.d>0 && c.d<=65536 && c.mode>=0 && c.mode<=4,"Invalid codec header");
-        need(c.width>=0 && c.width<=c.d && c.centroids>=0 && c.centroids<=256 && c.clusters>=0 && c.clusters<=256,"Invalid codec parameters");
-        if(c.mode==2) need(c.width>0,"Invalid PCA width");
-        if(c.mode==3) need(c.width>0 && c.d%c.width==0 && c.centroids>=2,"Invalid PQ shape");
-        if(c.mode==4) need(c.clusters>=2,"Invalid local clusters");
-        uint64_t stride=c.mode==0?c.d*4:c.mode==1?c.d:c.mode==2?c.width*4:c.mode==3?c.width:c.d+1;
-        uint64_t count=read_one<uint64_t>(f);need(count==uint64_t(c.n)*stride,"Invalid code byte count");
-        size_t ns=(c.mode==1?c.d:c.mode==4?c.clusters*c.d:0);
-        size_t nm=c.mode==2?c.d:0,nb=c.mode==2?size_t(c.d)*c.width:0;
-        size_t nk=c.mode==3?size_t(c.centroids)*c.d:0,nc=c.mode==4?c.clusters*c.d:0;
-        need(std::filesystem::file_size(path)==40+count+4*(ns+nm+nb+nk+nc),"Invalid codec file size");
-        if(c.mode==0 || c.mode==2) {floats=read_array<float>(f,count/4);c.codes=floats.data();}
-        else {bytes=read_array<uint8_t>(f,count);c.codes=bytes.data();}
-        scale=read_array<float>(f,ns);mean=read_array<float>(f,nm);basis=read_array<float>(f,nb);
-        books=read_array<float>(f,nk);centers=read_array<float>(f,nc);
-        c.scale=scale.data();c.mean=mean.data();c.basis=basis.data();c.codebooks=books.data();c.centers=centers.data();
-        for(const auto* a:{&floats,&scale,&mean,&basis,&books,&centers})
-            for(float v:*a) need(std::isfinite(v),"Nonfinite codec value");
-        for(float v:scale) need(v>0,"Invalid codec scale");
-        if(c.mode==3) for(auto v:bytes) need(v<c.centroids,"PQ code out of range");
-        if(c.mode==4) for(int i=0;i<c.n;++i) need(bytes[size_t(i)*(c.d+1)]<c.clusters,"Cluster ID out of range");
+    uint32_t n, entry;
+    std::vector<Row> rows;
+    Graph(const std::string& path,uint32_t count):n(count),rows(count) {
+        std::ifstream f(path,std::ios::binary); need(bool(f),"Cannot open graph");
+        uint32_t width=read_one<uint32_t>(f); entry=read_one<uint32_t>(f);
+        need(width>0 && width<n && entry<n,"Invalid graph header (expected native adjacency)");
+        for(uint32_t i=0;i<n;++i) {
+            uint32_t k=read_one<uint32_t>(f); need(k<=width,"Invalid degree");
+            rows[i].ids=read_array<uint32_t>(f,k);
+            for(auto id:rows[i].ids) need(id<n && id!=i,"Invalid edge");
+        }
         end_of_file(f);
+        std::vector<uint8_t> seen(n); std::vector<uint32_t> stack{entry}; seen[entry]=1;
+        while(!stack.empty()) {
+            auto v=stack.back(); stack.pop_back();
+            for(auto w:rows[v].ids) if(!seen[w]) { seen[w]=1; stack.push_back(w); }
+        }
+        need(std::accumulate(seen.begin(),seen.end(),uint64_t(0))==n,"Graph disconnected");
     }
-    size_t payload_bytes() const {return bytes.size()+4*(floats.size()+scale.size()+mean.size()+basis.size()+books.size()+centers.size());}
 };
-
-struct Candidate {float distance;uint32_t id;bool fresh;};
-static bool nearer(const Candidate& a,const Candidate& b) {return a.distance!=b.distance ? a.distance<b.distance:a.id<b.id;}
-struct Workspace {std::vector<uint32_t> visited;std::vector<Candidate> pool;uint32_t epoch=0;
-    Workspace(size_t n,size_t l):visited(n){pool.reserve(l+1);}
-};
-template<int Mode> void search(const Graph& g,const Config& c,const float* queries,int nq,int L,
-                               Workspace& w,std::vector<uint32_t>& labels) {
-    Distance<Mode> dist(c);
-    for(int qi=0;qi<nq;++qi){
-        if(++w.epoch==0){std::fill(w.visited.begin(),w.visited.end(),0);++w.epoch;}
-        auto& pool=w.pool;pool.clear();dist.prepare(queries+size_t(qi)*c.d);
-        auto add=[&](uint32_t id){if(w.visited[id]!=w.epoch){w.visited[id]=w.epoch;pool.push_back({dist(id),id,true});}};
+struct Cand { float dist; uint32_t id; bool fresh; };
+static bool nearer(const Cand& a,const Cand& b) {
+    return a.dist!=b.dist ? a.dist<b.dist : a.id<b.id;
+}
+static std::vector<uint32_t> read_truth(const std::string& path,uint32_t q,uint32_t n) {
+    std::ifstream f(path,std::ios::binary); need(bool(f),"Cannot open truth");
+    char header[8]{}; need(bool(f.read(header,8)),"Truncated truth");
+    bool matrix=std::string(header,8)=="EGI32001";
+    uint32_t columns=0;
+    if(matrix) {
+        uint32_t rows=read_one<uint32_t>(f); columns=read_one<uint32_t>(f);
+        need(rows>=q && columns>=10 && columns<=65536,"Invalid truth matrix shape");
+        need(std::filesystem::file_size(path)==16+uint64_t(rows)*columns*4,"Wrong truth size");
+    } else { f.clear(); f.seekg(0); }
+    std::vector<uint32_t> truth(size_t(q)*10);
+    for(uint32_t i=0;i<q;++i) {
+        uint32_t k=matrix ? columns : read_one<uint32_t>(f);
+        need(k>=10 && k<=65536,"Invalid truth row");
+        auto row=read_array<uint32_t>(f,k);
+        for(unsigned j=0;j<10;++j) need(row[j]<n,"Truth ID exceeds graph size; subset requires new ground truth");
+        std::copy_n(row.begin(),10,truth.begin()+size_t(i)*10);
+    }
+    return truth;
+}
+static double peak() {
+    std::ifstream f("/proc/self/status"); std::string s;
+    while(std::getline(f,s)) if(s.rfind("VmHWM:",0)==0) {
+        std::istringstream in(s.substr(6)); double x;
+        need(bool(in>>x),"Bad VmHWM"); return x/1024.;
+    }
+    throw std::runtime_error("VmHWM missing");
+}
+int main(int argc,char** argv) { try {
+    need(argc==15,"Usage: ann_query GRAPH BASE QUERY TRUTH N Q KIND CODES MODEL L WARMUP REPEATS PREFIX CODE_SIZE");
+    uint32_t n=number(argv[5]), qcount=number(argv[6]), L=number(argv[10]);
+    uint32_t warm=count_number(argv[11]), reps=number(argv[12]), size=count_number(argv[14]);
+    std::string kind=argv[7], prefix=argv[13];
+    need(kind=="float32" || kind=="int8" || kind=="pca" || kind=="pq" || kind=="local","Unknown method");
+    need(warm<=qcount && reps<=100 && L>=10 && L<=n,"Invalid query parameters");
+    new_output(prefix+".json"); new_output(prefix+".labels");
+    auto start=std::chrono::steady_clock::now();
+    Graph g(argv[1],n);
+    Matrix base{};
+    // Quantized modes never open argv[2], and never rerank using float vectors.
+    if(kind=="float32") { base=read_vectors(argv[2],n); need(base.d==128,"Expected 128D base"); }
+    auto queries=read_vectors(argv[3],qcount); need(queries.d==128,"Expected 128D queries");
+    auto truth=read_truth(argv[4],qcount,n);
+    std::unique_ptr<ann_quantization::SearchScorer> scorer;
+    if(kind!="float32") scorer=std::make_unique<ann_quantization::SearchScorer>(kind,argv[8],argv[9],n,size);
+    auto score=[&](uint32_t id,const float* q) {
+        if(scorer) return scorer->score(id);
+        const float* x=base.data.data()+size_t(id)*128; float sum=0;
+        for(int j=0;j<128;++j) { float d=x[j]-q[j]; sum+=d*d; }
+        return sum;
+    };
+    // Preserve the traversal and per-query workspace of the completed phone run.
+    auto one=[&](uint32_t qi,uint32_t* out) {
+        const float* q=queries.data.data()+size_t(qi)*128;
+        if(scorer) scorer->prepare(q);
+        std::vector<uint8_t> seen(n); std::vector<Cand> pool; pool.reserve(L+1);
+        auto add=[&](uint32_t id) {
+            if(!seen[id]) { seen[id]=1; pool.push_back({score(id,q),id,true}); }
+        };
         add(g.entry);
-        for(uint64_t j=g.offsets[g.entry];j<g.offsets[g.entry+1] && pool.size()<size_t(L);++j) add(g.ids[j]);
-        // Deterministic, bounded initialization independent of libc RNG.
-        for(uint32_t j=0;pool.size()<size_t(L) && j<g.n;++j) add(uint32_t((uint64_t(g.entry)+j)%g.n));
+        for(auto id:g.rows[g.entry].ids) { if(pool.size()>=L) break; add(id); }
+        for(uint32_t i=0;pool.size()<L && i<n;++i) add(i);
         std::sort(pool.begin(),pool.end(),nearer);
-        int position=0;
-        while(position<L){
-            int updated=L;auto current=pool[position];
-            if(current.fresh){
-                pool[position].fresh=false;
-                for(uint64_t j=g.offsets[current.id];j<g.offsets[current.id+1];++j){
-                    auto id=g.ids[j];if(w.visited[id]==w.epoch)continue;w.visited[id]=w.epoch;
-                    Candidate candidate{dist(id),id,true};if(!nearer(candidate,pool.back()))continue;
-                    auto it=std::lower_bound(pool.begin(),pool.end(),candidate,nearer);int at=int(it-pool.begin());
-                    pool.insert(it,candidate);pool.pop_back();updated=std::min(updated,at);
+        int pos=0;
+        while(pos<int(L)) {
+            int updated=L; Cand cur=pool[pos];
+            if(cur.fresh) {
+                pool[pos].fresh=false;
+                for(auto id:g.rows[cur.id].ids) {
+                    if(seen[id]) continue;
+                    seen[id]=1; Cand c{score(id,q),id,true};
+                    if(!nearer(c,pool.back())) continue;
+                    auto it=std::lower_bound(pool.begin(),pool.end(),c,nearer);
+                    int at=int(it-pool.begin()); pool.insert(it,c); pool.pop_back();
+                    updated=std::min(updated,at);
                 }
             }
-            position=updated<=position?updated:position+1;
+            pos=updated<=pos ? updated : pos+1;
         }
-        // No reranking and no original float32 base-vector pointer.
-        for(int k=0;k<10;++k) labels[size_t(qi)*10+k]=pool[k].id;
+        for(int k=0;k<10;++k) out[k]=pool[k].id;
+    };
+    std::vector<uint32_t> warmout(10), labels(size_t(qcount)*10);
+    double load_s=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+    for(uint32_t i=0;i<warm;++i) one(i,warmout.data());
+    std::vector<double> times;
+    for(uint32_t r=0;r<reps;++r) {
+        auto t=std::chrono::steady_clock::now();
+        for(uint32_t i=0;i<qcount;++i) one(i,labels.data()+size_t(i)*10);
+        times.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now()-t).count());
     }
-}
-static void dispatch(const Graph& g,const Config& c,const Matrix& q,int nq,int L,Workspace& w,std::vector<uint32_t>& out){
-    switch(c.mode){
-    case 0:search<0>(g,c,q.data.data(),nq,L,w,out);break;
-    case 1:search<1>(g,c,q.data.data(),nq,L,w,out);break;
-    case 2:search<2>(g,c,q.data.data(),nq,L,w,out);break;
-    case 3:search<3>(g,c,q.data.data(),nq,L,w,out);break;
-    case 4:search<4>(g,c,q.data.data(),nq,L,w,out);break;
-    }
-}
-template<int Mode> void all_scores(const Config& c,const float* q,std::vector<float>& out){
-    Distance<Mode> d(c);d.prepare(q);for(int i=0;i<c.n;++i)out[i]=d(i);
-}
-int main(int argc,char** argv){try{
-    if(argc==4 && std::string(argv[1])=="scores"){
-        Codec codec(argv[2]);auto q=read_matrix(argv[3]);need(q.d==unsigned(codec.c.d),"Dimension mismatch");
-        std::vector<float> scores(codec.c.n);
-        switch(codec.c.mode){
-        case 0:all_scores<0>(codec.c,q.data.data(),scores);break;
-        case 1:all_scores<1>(codec.c,q.data.data(),scores);break;
-        case 2:all_scores<2>(codec.c,q.data.data(),scores);break;
-        case 3:all_scores<3>(codec.c,q.data.data(),scores);break;
-        case 4:all_scores<4>(codec.c,q.data.data(),scores);break;
-        }
-        std::cout.write(reinterpret_cast<const char*>(scores.data()),scores.size()*4);return 0;
-    }
-    need(argc==9,"Usage: ann_query graph codec queries truth output_prefix L warmup repeats; or: ann_query scores codec queries");
-    new_output(std::string(argv[5])+".json");new_output(std::string(argv[5])+".labels");
-    auto load_start=std::chrono::steady_clock::now();Graph g(argv[1]);Codec codec(argv[2]);auto q=read_matrix(argv[3]);
-    need(g.n==unsigned(codec.c.n) && g.d==unsigned(codec.c.d) && q.d==g.d,"Graph/codec/query shape mismatch");
-    std::ifstream tf(argv[4],std::ios::binary);magic(tf,"EGI32001");
-    need(read_one<uint32_t>(tf)==q.n && read_one<uint32_t>(tf)==10,"Wrong truth shape");
-    auto truth=read_array<uint32_t>(tf,size_t(q.n)*10);end_of_file(tf);for(auto id:truth)need(id<g.n,"Invalid truth ID");
-    int L=number(argv[6]),warm=number(argv[7]),repeats=number(argv[8]);
-    need(L>=10 && unsigned(L)<=g.n && unsigned(warm)<=q.n && repeats<=100,"Invalid query parameters");
-    Workspace work(g.n,L);std::vector<uint32_t> labels(size_t(q.n)*10),reference(labels.size());
-    double load_s=std::chrono::duration<double>(std::chrono::steady_clock::now()-load_start).count();
-    dispatch(g,codec.c,q,warm,L,work,labels);
-    std::vector<double> seconds;
-    for(int r=0;r<repeats;++r){
-        auto start=std::chrono::steady_clock::now();dispatch(g,codec.c,q,q.n,L,work,labels);
-        seconds.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count());
-        if(r==0)reference=labels;else need(reference==labels,"Non-repeatable query results");
-    }
+    auto ordered=times; std::sort(ordered.begin(),ordered.end());
+    double sec=ordered.size()%2 ? ordered[ordered.size()/2]
+        : (ordered[ordered.size()/2-1]+ordered[ordered.size()/2])/2;
     size_t hits=0;
-    for(size_t i=0;i<q.n;++i)for(int k=0;k<10;++k)
-        if(std::find(truth.begin()+i*10,truth.begin()+i*10+10,labels[i*10+k])!=truth.begin()+i*10+10)++hits;
-    auto sorted=seconds;std::sort(sorted.begin(),sorted.end());
-    double median=sorted.size()%2?sorted[sorted.size()/2]:(sorted[sorted.size()/2-1]+sorted[sorted.size()/2])/2;
-    rusage usage{};need(getrusage(RUSAGE_SELF,&usage)==0,"Cannot measure RSS");
-    auto peak_rss=process_peak_rss();
-    std::ofstream raw(std::string(argv[5])+".labels",std::ios::binary);
-    raw.write(reinterpret_cast<const char*>(labels.data()),labels.size()*4);need(bool(raw),"Cannot write labels");
-    std::ofstream out(std::string(argv[5])+".json");out<<std::setprecision(12);
-    out<<"{\"mode\":"<<codec.c.mode<<",\"vectors\":"<<g.n<<",\"dimension\":"<<g.d
-       <<",\"queries\":"<<q.n<<",\"search_l\":"<<L<<",\"rerank\":false,\"full_precision_base_loaded\":"<<(codec.c.mode==0?"true":"false")
-       <<",\"graph_payload_bytes\":"<<g.bytes()<<",\"codec_payload_bytes\":"<<codec.payload_bytes()
-       <<",\"peak_rss_bytes\":"<<peak_rss<<",\"memory_metric\":\"Linux /proc/self/status VmHWM\",\"ru_maxrss_including_pre_exec_bytes\":"<<uint64_t(usage.ru_maxrss)*1024<<",\"load_seconds\":"<<load_s
-       <<",\"warmup\":"<<warm<<",\"repeats\":"<<repeats<<",\"recall_at_10\":"<<double(hits)/(q.n*10)
-       <<",\"qps\":"<<q.n/median<<",\"qpm\":"<<60*q.n/median<<",\"query_seconds\":[";
-    for(size_t i=0;i<seconds.size();++i){if(i)out<<',';out<<seconds[i];}out<<"]}\n";need(bool(out),"Cannot write result");
-    std::cout<<"mode="<<codec.c.mode<<" L="<<L<<" recall="<<double(hits)/(q.n*10)<<" QPM="<<60*q.n/median<<" RSS_KiB="<<peak_rss/1024<<'\n';
+    for(uint32_t i=0;i<qcount;++i) for(int a=0;a<10;++a) for(int b=0;b<10;++b)
+        if(labels[size_t(i)*10+a]==truth[size_t(i)*10+b]) { ++hits; break; }
+    double recall=double(hits)/(size_t(qcount)*10), qpm=60.*qcount/sec, rss=peak();
+    std::ofstream ids(prefix+".labels",std::ios::binary);
+    ids.write(reinterpret_cast<char*>(labels.data()),labels.size()*4); ids.close();
+    need(bool(ids),"Cannot write labels");
+    std::ofstream js(prefix+".json");
+    js<<std::setprecision(12)<<"{\"method\":\""<<kind<<"\",\"vectors\":"<<n
+      <<",\"queries\":"<<qcount<<",\"search_l\":"<<L<<",\"warmup\":"<<warm
+      <<",\"repeats\":"<<reps<<",\"code_size\":"<<size<<",\"query_threads\":1,\"recall_at_10\":"<<recall
+      <<",\"qpm\":"<<qpm<<",\"query_seconds\":"<<sec<<",\"load_seconds\":"<<load_s
+      <<",\"peak_rss_mib\":"<<rss<<",\"full_precision_base_loaded\":"<<(kind=="float32"?"true":"false")
+      <<",\"rerank\":false,\"graph_format\":\"native adjacency\",\"repeat_seconds\":[";
+    for(size_t i=0;i<times.size();++i) js<<(i?",":"")<<times[i];
+    js<<"]}\n"; js.close(); need(bool(js),"Cannot write metrics");
+    std::cout<<kind<<" Recall@10="<<recall<<" QPM="<<qpm<<" VmHWM_MiB="<<rss<<'\n';
     return 0;
-}catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
+} catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; } }

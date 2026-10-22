@@ -27,8 +27,9 @@ EFANNA graph 源文件中保留 `Copyright (c) 2017 ZJULearning` 和 MIT 许可�
 - 反向边阶段使用初次剪枝图的只读快照，并串行更新；保留 NSG 的 `tree_grow` 连通性修复。
 - 以 `include/portable_distance.h` 提供通用 C++ / ARM NEON L2 距离；两个上游 `distance.h` 当前作为该实现的转接头。
 - 使用 `include/bitset.h` 替换原有 Boost 位图依赖，修复数组释放问题，并增加短候选池等输入检查。
-- 禁用上游携带全精度底库的 `OptimizeGraph` 路径，导出独立 CSR 图，并通过 `src/query.cpp` 查询图与一种向量表示。
-- `include/distance_kernels.h` 沿用项目既有 C++ 距离实现并调整接口；量化模式不接收原始全精度底库指针。历史说明曾记载其由原项目 `cpp_search.cpp` 拆分，当前仓库不包含该历史文件。
+- 禁用上游携带全精度底库的 `OptimizeGraph` 路径，保存原生邻接图，并通过共用的 `src/query.cpp` 直接读取；不再转换 CSR。
+- 构图入口默认配置 4 个 OpenMP 线程，可通过参数覆盖；反向边更新和连通性修复仍为串行。Linux 与 Android 共用构图、查询源码，平台选项在 `cmake/` 中分别维护。
+- `src/knn_pooled_new_android.cpp` 沿用手机全量实验的 KNN 小分配内存池，仅链接 Android 的 `ann_knn`，避免大量小分配耗尽 Scudo 映射。
 
 ## 共享量化源码
 
@@ -45,11 +46,12 @@ ann/
 
 - `../ann_quantization/codecs.py` 提供 float32、INT8、PCA、PQ、Local adaptive INT8 的模型及统一接口。
 - `ann_codecs.py` 是适配入口，不包含量化算法副本。它根据自身位置加载同级共享包，并转出模型类、`make_codec`、`save_codec` 和 `load_codec`。
-- `pipeline.py` 使用共享实现进行训练和编码；正式图搜索和距离计算由 C++ 程序完成。
+- `pipeline.py` 使用共享实现进行训练和编码，并导出其原生模型；正式图搜索由 C++ 程序完成，量化评分直接复用 `../ann_quantization/native_search_scorer.hpp`，不保存私有算法副本。
+- 查询以只读 mmap 加载共享编码和模型；量化方法不读取全精度底库，也不做精确重排。旧 `include/distance_kernels.h` 和旧单文件编码专用入口已移除。
 - 原说明中“`ann_codecs.py` 为本地算法副本”已不适用于当前结构；已移除对不存在的 `LOCAL_CODE_ORIGIN.json` 的引用。
 
 ## 运行依赖与实验数据
 
 NumPy、h5py 及编译工具的统一安装方法见[仓库根目录说明](../README.md)。它们是运行或构建依赖，来源和许可分别由各自项目维护。
 
-SIFT 实验使用 [ANN-Benchmarks](https://github.com/erikbern/ann-benchmarks) 提供的 [SIFT-128 Euclidean HDF5](https://ann-benchmarks.com/sift-128-euclidean.hdf5)。数据集下载地址、输入格式和运行命令见 [README_CN.md](README_CN.md)。数据集及生成的图、编码、实验结果不属于上游源码归档。
+SIFT 实验使用 [ANN-Benchmarks](https://github.com/erikbern/ann-benchmarks) 提供的 [SIFT-128 Euclidean HDF5](https://ann-benchmarks.com/sift-128-euclidean.hdf5)，也支持设备已有的标准 fvecs/ivecs。输入格式见 [README_CN.md](README_CN.md)，编译与运行见 [BUILDING.md](BUILDING.md)，本机 HDF5 辅助流程见 [PI_RUN_CN.md](PI_RUN_CN.md)。数据集及生成的图、编码、实验结果不属于上游源码归档。

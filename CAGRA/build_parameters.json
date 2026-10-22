@@ -1,0 +1,12 @@
+{
+  "K": 64,
+  "L": 80,
+  "iterations": 8,
+  "S": 10,
+  "R": 100,
+  "graph_R": 32,
+  "graph_L": 64,
+  "graph_C": 132,
+  "threads": 4,
+  "seed": 20261014
+}

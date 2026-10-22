@@ -1,182 +1,71 @@
 # CPU 图检索：NSG + CAGRA 风格剪枝
 
-[English](README.md) | [仓库首页](../README.md)
+本项目是非 Faiss 的 CPU 研究实现，不是 NVIDIA CUDA/cuVS CAGRA。使用 EFANNA NN-Descent 产生候选图，在 NSG 初次剪枝和反向边溢出剪枝中使用 detour-count 规则，并保留连通性修复。
 
-本项目使用原生 NSG/EFANNA 构建近邻图，并在 NSG 的初次剪枝和反向边溢出剪枝中使用 CAGRA 风格的 detour-count 规则。查询由独立 C++ 程序执行，支持 float32、INT8、PCA、PQ 和 Local adaptive INT8。
+Linux（包括树莓派、WSL）和 Android ARM64 共用一套构图、查询源码。构图默认 4 线程，可通过参数修改；初次候选收集与剪枝使用 OpenMP，反向边阶段及连通性修复仍为串行，不表示所有阶段都能同时使用 4 核。查询为单线程 Top-10，无全精度重排。
 
-这是 CPU 上的研究实现，不是 NVIDIA CUDA/cuVS CAGRA。构图和查询不依赖 Faiss，不读取 `.faiss` 索引；量化训练与编码使用本仓库的 `ann_quantization` 和 NumPy。量化查询不执行全精度重排。
-
-五种索引和共享量化模块的环境配置、依赖安装及编译统一见[仓库根目录说明](../README.md)。
-
-## 仓库布局
-
-请克隆完整仓库，并保留以下同级关系。仓库本身可以放在任意目录，也可以改名。
+## 目录
 
 ```text
 ann/
-├── ann_quantization/
-│   ├── __init__.py
-│   └── codecs.py
+├── ann_quantization/             # 共享训练、编码和原生评分实现
 └── CAGRA/
-    ├── ann_codecs.py
-    ├── pipeline.py
-    ├── python_pi.sh
     ├── CMakeLists.txt
-    ├── include/
-    ├── src/
-    ├── tests/
-    └── vendor/
+    ├── cmake/
+    │   ├── linux.cmake
+    │   ├── android.cmake
+    │   └── build_targets.cmake
+    ├── src/                     # 共用 C++ 源码和执行封装
+    ├── include/                 # I/O、距离与剪枝头文件
+    ├── vendor/                  # NSG / EFANNA 源码及许可证
+    ├── run_build.py
+    ├── run_search.py
+    ├── build_parameters.json
+    ├── experiment.json
+    └── pipeline.py              # 本机准备数据与调用共享量化的辅助流程
 ```
 
-`ann_codecs.py` 根据自身位置加载 `../ann_quantization/codecs.py`，不使用固定的树莓派路径。不能仅下载 `CAGRA/` 后遗漏共享量化源码。
+编译和正式运行见 [BUILDING.md](BUILDING.md)。本机 HDF5 数据准备、共享编码生成及完整辅助流程见 [PI_RUN_CN.md](PI_RUN_CN.md)。请克隆完整仓库，保留 `CAGRA` 与 `ann_quantization` 同级。
 
-下面的命令均从 `CAGRA/` 执行。先按[仓库根目录说明](../README.md) 创建根目录 `.venv` 并编译。`python_pi.sh` 使用根目录虚拟环境，清除外部环境路径并切换到 `CAGRA/`；相对参数按 `CAGRA/` 解析。
+## 默认参数
 
-## 无需下载数据的合成示例
-
-生成 1,024 条 128 维向量、32 条查询，构图、生成五种表示并查询：
-
-```bash
-OUT=results/synthetic-1024
-bash python_pi.sh pipeline.py prepare --output "$OUT" \
-  --vectors 1024 --queries 32 --dim 128
-bash python_pi.sh pipeline.py build --output "$OUT"
-bash python_pi.sh pipeline.py encode --output "$OUT" \
-  --train 1024 --pca-dim 80 --pq-m 64 --pq-k 256 \
-  --clusters 32 --codec-iterations 10
-bash python_pi.sh pipeline.py query --output "$OUT" \
-  --search-l 20,50,100,200 --warmup 20 --repeats 3
-```
-
-不指定 `--dataset` 时，`prepare` 使用固定随机种子 `20261014` 生成数据并计算精确 Top-10。合成数据用于检查完整流程，不代表 SIFT1M 的召回率或速度。
-
-也可使用 `run_local.sh` 自动编译并运行完整流程，默认使用根目录虚拟环境；该流程会执行编译和测试：
-
-```bash
-DATASET= \
-OUTPUT=results/synthetic-next VECTORS=1024 QUERIES=32 WARMUP=20 REPEATS=3 \
-bash run_local.sh
-```
-
-输出必须位于 `CAGRA/` 内，且新实验的输出目录必须尚不存在；重新运行时换一个目录名。编码和查询输出也不覆盖已有结果。
-
-## SIFT1M 数据集与完整实验
-
-使用 [ANN-Benchmarks](https://github.com/erikbern/ann-benchmarks) 提供的 [SIFT-128 Euclidean HDF5](https://ann-benchmarks.com/sift-128-euclidean.hdf5)。它对应 1,000,000 条 128 维底库向量和 10,000 条查询。
-
-将数据集下载到仓库外的缓存目录，避免把它提交到 Git：
-
-```bash
-DATASET="${XDG_CACHE_HOME:-$HOME/.cache}/ann-datasets/sift-128-euclidean.hdf5"
-mkdir -p "$(dirname "$DATASET")"
-curl --fail --location --output "$DATASET" \
-  https://ann-benchmarks.com/sift-128-euclidean.hdf5
-```
-
-`prepare` 读取以下 HDF5 数据集：
-
-| 键 | 形状与含义 |
+| 内容 | 默认值 |
 | --- | --- |
-| `train` | `(N, D)`，底库向量；读取后转为 float32 |
-| `test` | `(Q, D)`，查询向量；维度须与底库相同 |
-| `neighbors` | `(Q, K)`，`K >= 10`，按精确欧氏距离排序的邻居 ID；ID 从 0 开始，对应 `train` 的行号 |
+| KNN | K=64、L=80、iterations=8、S=10、reverse R=100 |
+| 图剪枝 | R=32、L=64、C=132 |
+| 构图 | 4 线程，随机种子 20261014 |
+| 查询 | L=50、Top-10、预热最多 200 条、重复 3 次、单线程 |
+| INT8 | 每维对称 INT8 |
+| PCA | 128 → 80 维 float32 |
+| PQ | M=64、每个子空间 256 个码字、ADC 查询 |
+| Local | 32 个簇、簇号及 INT8 残差 |
 
-ANN-Benchmarks 文件中的 `distances` 和其他附加数据集不被本流程读取。输入向量应为有限数值。全量实验直接使用 `neighbors` 的前 10 列；子集实验会重新计算子集的精确 Top-10，不能沿用全量邻居 ID。
+`build_parameters.json` 和 `experiment.json` 为两个平台共用的配置。数据规模从输入文件推导，不固定百万规模。仅支持当前实验的 128 维输入。使用底库子集时，必须提供针对该子集重新计算的 Top-10 真值和与图节点顺序一致的编码。
 
-完成根目录说明中的环境配置、编译和上述数据下载后，在同一 Bash 会话中运行：
+## 图与输入格式
 
-```bash
-OUT=results/sift1m-m64-pca80
-bash python_pi.sh pipeline.py prepare --output "$OUT" \
-  --dataset "$DATASET" --vectors 0 --queries 10000
-bash python_pi.sh pipeline.py build --output "$OUT" \
-  --gk 64 --knn-l 80 --iterations 8 --sample 10 --reverse 100 \
-  --degree 32 --build-l 64 --build-c 132
-bash python_pi.sh pipeline.py encode --output "$OUT" \
-  --train 10000 --pca-dim 80 --pq-m 64 --pq-k 256 \
-  --clusters 32 --codec-iterations 10
-bash python_pi.sh pipeline.py query --output "$OUT" \
-  --methods float32,int8,pca,pq,local \
-  --search-l 20,50,100,200 --warmup 200 --repeats 3
+构图程序直接输出 `final.graph`，查询直接读取它，不需要 Python 或服务器转换 CSR：
+
+```text
+128D 底库 → ann_knn → candidate.knn → ann_build → final.graph → ann_query
 ```
 
-`--vectors 0` 表示使用全部 `train`。完整建图当前为单线程。数据准备、候选图、最终图和五种表示会占用数 GB 磁盘，构图与编码训练还需要额外内存；按目标机器可用资源选择全量或子集实验。
+- 底库/查询：标准 `fvecs`，也兼容 `EGF32001` + uint32 N/D + N×D float32 的旧数据矩阵。
+- 真值：标准 `ivecs`，每行至少 10 个 ID；也兼容 `EGI32001` 矩阵。
+- 候选图：逐行 uint32 K + K 个 uint32 邻居。
+- 最终图：uint32 最大出度/入口 ID，随后逐节点 uint32 出度 + 邻居 ID。文件不含 N，运行时从底库或编码推导；直接运行 C++ 时须传正确 N。
+- 量化：共享实现生成的 `codes.npy`，以及原生模型目录中的 `scale.bin`、`mean.bin`、`basis.bin`、`codebooks.bin` 或 `centers.bin`。
 
-先尝试较小的 SIFT 子集时，可将输出目录改为新名称，将 `prepare` 参数改成 `--vectors 20000 --queries 500`，其余阶段继续使用该输出目录。PQ 要求维度能被子空间数整除：128 维可使用 M64，96 维可显式指定 `--pq-m 32`。训练样本数不能少于 PQ 码字数或 Local 簇数。
+统一版本不读取历史 `EGCSR001` 图和 `EGCODE01` 单文件编码。旧结果可作为历史记录，但不能直接作为新入口的输入。历史 `raw.nsg` 如果是同样的原生邻接格式，则可直接指定，不必改名。
 
-已有图和编码可重复查询，使用新的查询目录名：
+## 内存与评测
 
-```bash
-bash python_pi.sh pipeline.py query --output "$OUT" \
-  --run-name query-again --search-l 20,50,100,200 --warmup 200 --repeats 3
-```
+量化查询直接调用 `../ann_quantization/native_search_scorer.hpp`。量化模式不打开全精度底库，不复制 float32 表示，不做候选精确重排。共享评分器以只读 mmap 加载编码和模型；图使用内存中的原生邻接表。
 
-## 测试命令
+查询结果写入 `<prefix>.json` 和 `<prefix>.labels`。JSON 包括 Recall@10、QPM、查询中位耗时、各次耗时、加载耗时与 `/proc/self/status` 的 VmHWM 峰值 RSS。查询计时包含投影、PQ 查表和图遍历，排除文件加载、预热、召回计算及写盘。
 
-以下命令供使用者自行验证。`ctest` 检查剪枝规则；`verify.py` 针对已完成构图和编码的小数据集，检查五种距离与 NumPy 对照、穷举搜索、隐藏全精度底库后的量化查询，以及异常文件拒绝行为：
+统一 Python 入口执行时还保存 `.stdout`、`.time`，后者来自 `time -v`，可查看构图/查询进程总耗时与峰值内存；`time -v` 的进程总耗时与 JSON 的纯查询耗时口径不同。各方法、各次运行均应选择新输出前缀。
 
-```bash
-ctest --test-dir build --output-on-failure
-bash python_pi.sh tests/verify.py \
-  --case results/synthetic-1024 --bin build --output-name verification
-```
+剪枝规则测试可通过 `-DBUILD_TESTING=ON` 单独启用。旧 CSR / 单文件编码专用的验证与 PQ 探针已移除，避免调用不兼容的旧接口。
 
-`verify.py` 限制底库不超过 4,096 条；不要对 SIFT1M 全量目录运行。重复验证应选择新的 `--output-name`。
-
-需要 AddressSanitizer / UndefinedBehaviorSanitizer 时，可另建目录，再将验证命令的 `--bin` 改为 `build-asan`：
-
-```bash
-cmake -S . -B build-asan -DANN_SANITIZE=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=g++
-cmake --build build-asan -j2
-```
-
-## 输出与评测口径
-
-| 路径（相对于实验输出目录） | 内容 |
-| --- | --- |
-| `dataset.json` | 数据来源、规模及输入哈希 |
-| `base.f32`、`queries.f32`、`truth.i32` | 准备后的底库、查询和精确 Top-10 |
-| `candidate.knn`、`raw.nsg` | 构图中间产物 |
-| `index.graph`、`build.json` | CSR 图、构图参数、耗时、度数和可达性统计 |
-| `codecs/`、`codecs/manifest.json` | 编码模型、查询表示和关联哈希 |
-| `query-results/summary.json` | 平台、查询程序哈希及各组原始指标 |
-| `query-results/RESULTS_CN.md` | 自动生成的结果表 |
-| `query-results/*.labels` | 每组查询的 Top-10 ID |
-
-每个方法、每个 L 启动独立 C++ 子进程。查询耗时包含 PCA 投影、PQ 查表和图遍历，排除文件加载、预热、召回率计算及写盘；速度使用重复查询耗时的中位数。峰值内存使用 Linux `VmHWM`，`ru_maxrss` 仅作诊断。同一 L 不等于同一召回率，方法间速度比较应同时参考 Recall@10。
-
-历史树莓派输出若保留在本地，可查看 `results/sift1m-m64-pca80-run1/`；这些生成文件被 `.gitignore` 排除，不是克隆仓库后自带的数据。自动报告中仍可能出现历史固定措辞，平台应以 `summary.json` 的 `machine`、`platform` 字段为准。
-
-## 算法与内存策略
-
-- EFANNA 的 NN-Descent 产生初始候选图，NSG 负责候选收集、反向边和连通性修复。
-- detour-count 按到当前节点的距离排序候选，统计经更靠前候选的两跳路径，优先保留 detour 较少的边；同数时按距离和节点 ID 排序。
-- 反向边阶段读取初次剪枝图的快照，并串行更新；保留 NSG 的 `tree_grow`，因此修复边可能使部分节点的出度超过目标 R，实际统计写入 `build.json`。
-- 查询加载 CSR 图、查询向量、评测真值及一种表示。量化模式不打开 `base.f32` 或 `codecs/float32.bin`，不做精确重排；float32 基线单独加载自己的全精度表示。
-- 查询表示完整读入 RAM，不使用 mmap。节省的是查询阶段内存，不承诺降低构图峰值，也未测量冷缓存磁盘 I/O。
-
-| 表示 | 默认配置 |
-| --- | --- |
-| float32 | 原始 128 维 float32 基线 |
-| INT8 | 每维对称 INT8 及缩放 |
-| PCA | 128 → 80 维 float32，附均值和投影矩阵 |
-| PQ | 64 个子空间，每个 256 个码字，使用 ADC 查询 |
-| Local | 32 个簇、簇号与 INT8 残差，附中心和缩放 |
-
-旧编码不会因默认参数变化自动更新；改变参数时应在新的实验目录重新编码。
-
-## 源码与文件格式
-
-`src/` 提供构图和查询入口，`include/` 包含剪枝、距离与 I/O 实现，`vendor/` 保存裁剪后的 NSG/EFANNA 源码，`tests/` 保存规则测试、距离验证和 PQ 审计工具。来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、[UPSTREAM.json](UPSTREAM.json)、[VENDORED_FILES.json](VENDORED_FILES.json) 和 [vendor_changes.patch](vendor_changes.patch)；保留上游许可证及作者声明。
-
-二进制格式为小端、版本 1：
-
-- `*.f32`：`EGF32001`、uint32 N/D、N×D float32。
-- `truth.i32`：`EGI32001`、uint32 Q/10、Q×10 uint32 ID。
-- `index.graph`：`EGCSR001`、uint32 N/D/entry/flags、uint64 E、N+1 个 uint64 行偏移及 E 个 uint32 邻居 ID。
-- `<method>.bin`：`EGCODE01`、uint32 N/D/mode/width/centroids/clusters、uint64 编码字节数、编码及适用的 float32 模型数组。
-- mode：float32=0、INT8=1、PCA=2、PQ=3、Local=4。
-
-`pipeline.py query` 检查清单中的输入身份哈希；直接运行底层 `ann_query` 的格式检查不替代这一步。
-
-`.venv/`、`build*/`、`results/`、`logs/` 和 Python 缓存不应提交到 Git。复现依赖源码、安装步骤、参数和数据集，而不是复制某台机器的环境或可执行文件。
+来源与许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
