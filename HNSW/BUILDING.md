@@ -72,7 +72,6 @@ backup, not installed as a second public workflow. Existing HNSW prepare_codes
 and export_compact_graph tools remain in src/. Standard launchers generate no
 `*_command.txt` files and do not automatically run a full benchmark campaign.
 
-This migration synchronizes only these four index directories. The original per-index
-requirements.txt is temporarily retained because the newer upstream root requirements.txt
-is outside this edit scope. When integrating the full upstream commit later, use its
-root requirements.txt and remove the obsolete child manifests in that integration.
+Python dependencies are maintained in the repository-root requirements.txt.
+From the repository root, install them with `python -m pip install -r requirements.txt`
+in the active virtual environment. The obsolete per-index manifests have been removed.
