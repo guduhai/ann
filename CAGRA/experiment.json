@@ -4,10 +4,13 @@
   "W": 50,
   "queries": 0,
   "warmup": 200,
-  "repeats": 3,
+  "repeats": 1,
   "threads": 1,
   "rerank": false,
-  "pq_m": 64,
+  "pq_m_by_dimension": {
+    "96": 48,
+    "128": 64
+  },
   "pca_dimension": 80,
   "graph_format": "native adjacency"
 }

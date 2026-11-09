@@ -1,78 +1,73 @@
-# CAGRA 本机数据准备与完整流程
+# CAGRA：树莓派共享表示入口
 
-文件名保留历史名称；本页适用于 Linux、WSL 和树莓派。环境依赖按仓库根目录 README 安装，平台编译及已有 fvecs/编码的运行方法见 [BUILDING.md](BUILDING.md)。Android 不运行本页的 Python 数据准备流程，直接使用已有数据和共享编码。
+当前正式入口与 HNSW、NSG、NSSG、VAMANA 使用相同的数据及共享编码约定。
+本部署目标为 Linux/树莓派，支持 96 维 DEEP 与 128 维 SIFT。
+本机仓库还保留 Android 构建配置，见 [BUILDING.md](BUILDING.md)。
+下列路径和参考模型对应当前树莓派；本机源码未包含数据、模型和实验结果。
+仓库版 `python_pi.sh` 使用仓库根目录 `.venv`；树莓派部署版使用该设备已有的专用环境。
 
-## 编译与入口
-
-克隆完整仓库，保留 `CAGRA/` 与 `ann_quantization/` 同级。以下命令从 `CAGRA/` 执行：
-
-```bash
-cmake -S . -B build/linux-arm64 -DCMAKE_BUILD_TYPE=Release
-cmake --build build/linux-arm64 -j2
-```
-
-`linux-arm64` 是目录名称，在 WSL 可改为 `linux-x86_64`，并同步修改下方 `BIN`。安装系统 `time` 软件包后，构图/查询入口会记录进程耗时和峰值内存。
-
-`python_pi.sh` 根据自身位置调用根目录 `.venv/bin/python`，清除外部 Python/动态库路径并关闭字节码写入。它切换到 `CAGRA/` 执行，相对路径按该目录解释。其 `OMP_NUM_THREADS=1` 不限制构图：C++ 构图入口会显式设置 `--threads` 指定的线程数，默认 4。
-
-## SIFT1M 全量流程
-
-将 `DATASET` 替换为已有 HDF5 文件的绝对路径；需要下载时可使用 [ANN-Benchmarks SIFT](https://ann-benchmarks.com/sift-128-euclidean.hdf5)。输出目录必须尚不存在：
+## 构建
 
 ```bash
-DATASET=/absolute/path/sift-128-euclidean.hdf5
-OUT=results/sift1m-m64-pca80
-BIN=build/linux-arm64/bin
-
-bash python_pi.sh pipeline.py prepare --output "$OUT" \
-  --dataset "$DATASET" --vectors 0 --queries 10000
-bash python_pi.sh pipeline.py build --output "$OUT" --bin "$BIN" \
-  --threads 4 --gk 64 --knn-l 80 --iterations 8 --sample 10 --reverse 100 \
-  --degree 32 --build-l 64 --build-c 132
-bash python_pi.sh pipeline.py encode --output "$OUT" \
-  --train 10000 --pca-dim 80 --pq-m 64 --codec-iterations 10
-bash python_pi.sh pipeline.py query --output "$OUT" --bin "$BIN" \
-  --methods float32,int8,pca,pq,local --search-l 50 --warmup 200 --repeats 3
+cd /home/pi-6/ann/CAGRA
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
 ```
 
-PQ 固定每个子空间 256 个码字，Local 固定 32 个簇，与共享原生评分器一致。仅支持 128 维输入；`--pq-m` 必须整除 128，`--pca-dim` 为 1–128。训练样本至少 256 条。
+程序位于 `build/bin/`：`ann_knn`、`ann_build`、`ann_query`（128维）、
+`ann_query96`（96维）。查询启动器按输入维度选择程序。
+128维直接包含共享评分头文件；96维在构建目录中按其他四索引 DEEP 实验相同的
+规则生成共享头文件的96维版本，来源哈希见 `build/shared96/source_manifest.json`。
+共享目录和其他索引源码不需要修改。
 
-构图与训练需要额外内存，底库、中间图、模型和编码需要数 GB 磁盘。构图配置 4 线程，其中反向边更新和连通性修复仍串行；查询保持单线程、无全精度重排。
+## DEEP1M 完整实验
 
-需要小规模数据时，在新输出目录准备 `--vectors 20000 --queries 500`，其余阶段不变。子集真值会针对实际底库重新计算。已有全量真值不能直接用于底库子集。
-
-## 无需下载的示例
-
-以下生成固定种子的合成数据并计算 Top-10，展示完整流程，不代表 SIFT 性能：
+先查看参数；加 `--execute` 才执行。输出必须是 `CAGRA/results` 中的新目录。
 
 ```bash
-OUT=results/synthetic-1024
-BIN=build/linux-arm64/bin
-bash python_pi.sh pipeline.py prepare --output "$OUT" \
-  --vectors 1024 --queries 32
-bash python_pi.sh pipeline.py build --output "$OUT" --bin "$BIN" --threads 4
-bash python_pi.sh pipeline.py encode --output "$OUT" \
-  --train 1024 --pca-dim 80 --pq-m 64 --codec-iterations 10
-bash python_pi.sh pipeline.py query --output "$OUT" --bin "$BIN" \
-  --search-l 50 --warmup 20 --repeats 3
+cd /home/pi-6/ann/CAGRA
+bash python_pi.sh run_experiment.py --output results/deep1m-shared-run1
+bash python_pi.sh run_experiment.py --output results/deep1m-shared-run1 --execute
 ```
 
-## 产物与再次查询
+默认读取 `../data/deep1M/` 的原始 fvecs 和 ivecs，不生成底库副本。
+使用 `../HNSW/experiments/deep1m-20261109/` 的 PQ M48/PCA80 模型；
+INT8/Local 按其他四索引相同的 HNSW 内部顺序抽样训练，编码则按原始数据ID写入。
+基线直接读取 fvecs。四种压缩表示逐种准备、查询后删除本轮临时编码，
+保留每种表示的编码来源记录。已有模型、数据和其他索引图只读使用。
 
-所有辅助流程产物均在 `CAGRA/results/` 内：
+默认构图4线程；查询单线程、Top-10、W=50、预热200、重复1次、不重排。
+构图仍使用 CAGRA 风格 detour 剪枝，反向边处理阶段保持串行。
+四线程不代表每个阶段都有四倍加速。
+完整流程的磁盘检查按原生图和单份最大编码计算，约需700 MiB额外可用空间。
+若需重复3次查询，加 `--repeats 3`。
 
-- `base.f32`、`queries.f32`、`truth.i32`、`dataset.json`：数据矩阵、真值与哈希。
-- `graph/candidate.knn`、`graph/final.graph`：候选图与原生邻接图。
-- `graph/knn.stdout`、`graph/knn.time`、`graph/build.stdout`、`graph/build.time`、`build.json`：构图日志、时间/内存和参数。
-- `codecs/<method>/codes.npy`、`native/*.bin`、`codec.json`、`codec.npz`：共享编码和模型。
-- `codecs/manifest.json`：图、编码及模型校验信息。
-- `query-results/summary.json`、`query-results/RESULTS_CN.md`：指标与结果表；每组另有 `.json/.labels/.stdout/.time`。
+输出包括 `graph/final.graph`、`graph/build.json`、各阶段原始日志、
+`queries/<method>.json/.labels/.stdout/.time`、编码来源记录和 `summary.json`。
+构图速度统计候选图和最终图两个完整进程，不再有 CSR 转换。
+峰值内存主字段来自 GNU time，与既有四索引 DEEP 脚本一致；查询程序的 VmHWM
+单独保存在 `vmhwm_peak_rss_mib`。QPM 使用查询循环时间，不含模型训练、文件加载和写盘。
 
-复用本次新格式的图和编码时，指定尚不存在的结果子目录：
+## 单独构图与查询
 
 ```bash
-bash python_pi.sh pipeline.py query --output "$OUT" --bin "$BIN" \
-  --run-name query-next --search-l 20,50,100,200 --warmup 20 --repeats 3
+bash python_pi.sh run_build.py   --data /home/pi-6/ann/data/deep1M/deep_base.fvecs   --output /home/pi-6/ann/CAGRA/results/deep-build-run1 --threads 4 --execute
+
+bash python_pi.sh run_search.py --method exact   --graph /home/pi-6/ann/CAGRA/results/deep-build-run1/final.graph   --base /home/pi-6/ann/data/deep1M/deep_base.fvecs   --query /home/pi-6/ann/data/deep1M/deep_query.fvecs   --truth /home/pi-6/ann/data/deep1M/deep_groundtruth.ivecs   --output results/deep-query-run1/exact --execute
 ```
 
-`--warmup` 不得超过实际查询条数。更改训练/编码参数请使用新的实验目录。本页流程与历史 CSR / `EGCODE01` 编码不兼容；历史报告可保留，但旧产物不能直接交给新入口。所有生成产物均被 Git 忽略。
+`run_build.py` 默认在成功记录最终图后清理本轮候选 KNN 图；需要保留时加
+`--keep-candidate`。各个阶段失败后保留日志，换新输出目录重试。
+
+压缩查询使用 `--method int8|pq48|pq64|pq|pca80|pca|local`、
+`--codes <含codes.npy的目录>`、`--model <native目录>`。
+编码必须按原始数据ID排列，不能直接传 HNSW 内部顺序编码。
+量化查询不访问 `--base`，不做全精度重排。
+独立准备编码可使用 `prepare_codes.py --help`。
+
+## 历史记录
+
+旧 `pipeline.py` 入口已停用。原始修改备份位于 `.backups/`。
+旧 SIFT 查询结果及日志仍保留在原来的 `results/sift1m-m64-pca80-run1/`。
+历史文档和旧独立距离核不参与当前 CMake 构建。
+当前修改经过96/128维真实子集验证；不代表已经完成本版本的百万级全量复测。

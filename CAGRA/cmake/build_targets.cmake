@@ -16,9 +16,15 @@ foreach(target ann_knn ann_build)
 endforeach()
 add_executable(ann_query src/query.cpp)
 # Quantization stays in the shared sibling directory; no private copy.
-target_include_directories(ann_query PRIVATE include "${PROJECT_SOURCE_DIR}/..")
-target_compile_options(ann_query PRIVATE -O3)
-target_link_libraries(ann_query PRIVATE ann_platform)
+target_include_directories(ann_query PRIVATE include "${ANN_SHARED}")
+target_compile_definitions(ann_query PRIVATE ANN_DIM=128)
+add_executable(ann_query96 src/query.cpp)
+target_include_directories(ann_query96 PRIVATE include "${ANN_SHARED96}")
+target_compile_definitions(ann_query96 PRIVATE ANN_DIM=96)
+foreach(target ann_query ann_query96)
+    target_compile_options(${target} PRIVATE -O3)
+    target_link_libraries(${target} PRIVATE ann_platform)
+endforeach()
 # Compatibility name: the same query executable, not a second implementation.
 add_custom_command(TARGET ann_query POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:ann_query>"

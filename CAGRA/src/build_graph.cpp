@@ -13,7 +13,7 @@ int main(int argc, char** argv) { try {
     auto x=read_vectors(argv[1],argc>=8 ? count_number(argv[7]) : 0);
     unsigned r=number(argv[4]), l=number(argv[5]), c=number(argv[6]);
     unsigned threads=argc==9 ? number(argv[8]) : 4;
-    need(x.d==128,"Expected 128D vectors");
+    need(x.d==96 || x.d==128,"Expected 96D or 128D vectors");
     need(r<x.n && l<x.n && l>=r && c>=r,"Require R<=L<N and C>=R");
     std::ifstream knn(argv[2],std::ios::binary); need(bool(knn),"Cannot open kNN graph");
     unsigned k=read_one<uint32_t>(knn); need(k>0 && k<x.n,"Invalid K"); knn.seekg(0);

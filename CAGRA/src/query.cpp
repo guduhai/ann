@@ -1,5 +1,8 @@
 #include "io.h"
-#include <ann_quantization/native_search_scorer.hpp>
+#include "native_search_scorer.hpp"
+#ifndef ANN_DIM
+#define ANN_DIM 128
+#endif
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
@@ -9,27 +12,31 @@
 #include <sstream>
 
 // Shared Linux/Android query: native NSG adjacency, no CSR conversion.
-struct Row { std::vector<uint32_t> ids; };
+// Native adjacency is mapped read-only, as in the NSG/NSSG adapters.
 struct Graph {
+    ann_quantization::MappedFile file;
     uint32_t n, entry;
-    std::vector<Row> rows;
-    Graph(const std::string& path,uint32_t count):n(count),rows(count) {
-        std::ifstream f(path,std::ios::binary); need(bool(f),"Cannot open graph");
-        uint32_t width=read_one<uint32_t>(f); entry=read_one<uint32_t>(f);
-        need(width>0 && width<n && entry<n,"Invalid graph header (expected native adjacency)");
+    const uint32_t* words;
+    std::vector<size_t> offsets;
+    std::vector<uint32_t> degrees;
+    Graph(const std::string& path,uint32_t count):file(path),n(count),offsets(n),degrees(n) {
+        need(file.size()>=12 && file.size()%4==0,"Invalid native adjacency size");
+        words=reinterpret_cast<const uint32_t*>(file.data());
+        uint32_t width=words[0]; entry=words[1];
+        need(width>0 && width<n && entry<n,"Invalid native adjacency header");
+        size_t cursor=2, length=file.size()/4;
         for(uint32_t i=0;i<n;++i) {
-            uint32_t k=read_one<uint32_t>(f); need(k<=width,"Invalid degree");
-            rows[i].ids=read_array<uint32_t>(f,k);
-            for(auto id:rows[i].ids) need(id<n && id!=i,"Invalid edge");
+            need(cursor<length,"Truncated graph");
+            uint32_t k=words[cursor++];
+            need(k>0 && k<=width && cursor+k<=length,"Invalid degree");
+            offsets[i]=cursor; degrees[i]=k;
+            for(uint32_t j=0;j<k;++j) need(words[cursor+j]<n && words[cursor+j]!=i,"Invalid edge");
+            cursor+=k;
         }
-        end_of_file(f);
-        std::vector<uint8_t> seen(n); std::vector<uint32_t> stack{entry}; seen[entry]=1;
-        while(!stack.empty()) {
-            auto v=stack.back(); stack.pop_back();
-            for(auto w:rows[v].ids) if(!seen[w]) { seen[w]=1; stack.push_back(w); }
-        }
-        need(std::accumulate(seen.begin(),seen.end(),uint64_t(0))==n,"Graph disconnected");
+        need(cursor==length,"Graph node count mismatch or trailing data");
     }
+    const uint32_t* begin(uint32_t id) const { return words+offsets[id]; }
+    const uint32_t* end(uint32_t id) const { return begin(id)+degrees[id]; }
 };
 struct Cand { float dist; uint32_t id; bool fresh; };
 static bool nearer(const Cand& a,const Cand& b) {
@@ -75,37 +82,41 @@ int main(int argc,char** argv) { try {
     Graph g(argv[1],n);
     Matrix base{};
     // Quantized modes never open argv[2], and never rerank using float vectors.
-    if(kind=="float32") { base=read_vectors(argv[2],n); need(base.d==128,"Expected 128D base"); }
-    auto queries=read_vectors(argv[3],qcount); need(queries.d==128,"Expected 128D queries");
+    if(kind=="float32") { base=read_vectors(argv[2],n); need(base.d==ANN_DIM,"Base dimension does not match query executable"); }
+    auto queries=read_vectors(argv[3],qcount); need(queries.d==ANN_DIM,"Query dimension does not match executable");
     auto truth=read_truth(argv[4],qcount,n);
     std::unique_ptr<ann_quantization::SearchScorer> scorer;
     if(kind!="float32") scorer=std::make_unique<ann_quantization::SearchScorer>(kind,argv[8],argv[9],n,size);
     auto score=[&](uint32_t id,const float* q) {
         if(scorer) return scorer->score(id);
-        const float* x=base.data.data()+size_t(id)*128; float sum=0;
-        for(int j=0;j<128;++j) { float d=x[j]-q[j]; sum+=d*d; }
+        const float* x=base.data.data()+size_t(id)*ANN_DIM; float sum=0;
+        for(int j=0;j<ANN_DIM;++j) { float d=x[j]-q[j]; sum+=d*d; }
         return sum;
     };
-    // Preserve the traversal and per-query workspace of the completed phone run.
+    // Preserve the Pi traversal, including reusable epoch workspace and entry-relative fill.
+    std::vector<uint32_t> seen(n); uint32_t epoch=0;
+    std::vector<Cand> pool; pool.reserve(L+1);
     auto one=[&](uint32_t qi,uint32_t* out) {
-        const float* q=queries.data.data()+size_t(qi)*128;
+        const float* q=queries.data.data()+size_t(qi)*ANN_DIM;
         if(scorer) scorer->prepare(q);
-        std::vector<uint8_t> seen(n); std::vector<Cand> pool; pool.reserve(L+1);
+        if(++epoch==0) { std::fill(seen.begin(),seen.end(),0); ++epoch; }
+        pool.clear();
         auto add=[&](uint32_t id) {
-            if(!seen[id]) { seen[id]=1; pool.push_back({score(id,q),id,true}); }
+            if(seen[id]!=epoch) { seen[id]=epoch; pool.push_back({score(id,q),id,true}); }
         };
         add(g.entry);
-        for(auto id:g.rows[g.entry].ids) { if(pool.size()>=L) break; add(id); }
-        for(uint32_t i=0;pool.size()<L && i<n;++i) add(i);
+        for(auto ptr=g.begin(g.entry);ptr!=g.end(g.entry) && pool.size()<L;++ptr) add(*ptr);
+        for(uint32_t i=0;pool.size()<L && i<n;++i) add(uint32_t((uint64_t(g.entry)+i)%n));
         std::sort(pool.begin(),pool.end(),nearer);
         int pos=0;
         while(pos<int(L)) {
             int updated=L; Cand cur=pool[pos];
             if(cur.fresh) {
                 pool[pos].fresh=false;
-                for(auto id:g.rows[cur.id].ids) {
-                    if(seen[id]) continue;
-                    seen[id]=1; Cand c{score(id,q),id,true};
+                for(auto ptr=g.begin(cur.id);ptr!=g.end(cur.id);++ptr) {
+                    auto id=*ptr;
+                    if(seen[id]==epoch) continue;
+                    seen[id]=epoch; Cand c{score(id,q),id,true};
                     if(!nearer(c,pool.back())) continue;
                     auto it=std::lower_bound(pool.begin(),pool.end(),c,nearer);
                     int at=int(it-pool.begin()); pool.insert(it,c); pool.pop_back();
@@ -137,11 +148,11 @@ int main(int argc,char** argv) { try {
     need(bool(ids),"Cannot write labels");
     std::ofstream js(prefix+".json");
     js<<std::setprecision(12)<<"{\"method\":\""<<kind<<"\",\"vectors\":"<<n
-      <<",\"queries\":"<<qcount<<",\"search_l\":"<<L<<",\"warmup\":"<<warm
+      <<",\"dimensions\":"<<ANN_DIM<<",\"queries\":"<<qcount<<",\"search_l\":"<<L<<",\"warmup\":"<<warm
       <<",\"repeats\":"<<reps<<",\"code_size\":"<<size<<",\"query_threads\":1,\"recall_at_10\":"<<recall
       <<",\"qpm\":"<<qpm<<",\"query_seconds\":"<<sec<<",\"load_seconds\":"<<load_s
-      <<",\"peak_rss_mib\":"<<rss<<",\"full_precision_base_loaded\":"<<(kind=="float32"?"true":"false")
-      <<",\"rerank\":false,\"graph_format\":\"native adjacency\",\"repeat_seconds\":[";
+      <<",\"peak_rss_kib\":"<<rss*1024<<",\"peak_rss_mib\":"<<rss<<",\"full_precision_base_loaded\":"<<(kind=="float32"?"true":"false")
+      <<",\"database_float_bytes_loaded\":"<<(kind=="float32"?uint64_t(n)*ANN_DIM*4:0)<<",\"rerank\":false,\"graph_format\":\"native adjacency\",\"repeat_seconds\":[";
     for(size_t i=0;i<times.size();++i) js<<(i?",":"")<<times[i];
     js<<"]}\n"; js.close(); need(bool(js),"Cannot write metrics");
     std::cout<<kind<<" Recall@10="<<recall<<" QPM="<<qpm<<" VmHWM_MiB="<<rss<<'\n';

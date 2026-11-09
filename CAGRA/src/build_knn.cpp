@@ -13,7 +13,7 @@ int main(int argc, char** argv) { try {
     auto x=read_vectors(argv[1],argc>=9 ? count_number(argv[8]) : 0);
     unsigned k=number(argv[3]), l=number(argv[4]), iter=number(argv[5]);
     unsigned s=number(argv[6]), r=number(argv[7]), threads=argc==10 ? number(argv[9]) : 4;
-    need(x.d==128,"Expected 128D vectors");
+    need(x.d==96 || x.d==128,"Expected 96D or 128D vectors");
     need(x.n>100 && k<=l && l<x.n && s>=2 && s<=l && 2*s<x.n,"Invalid NNDescent parameters");
     omp_set_dynamic(0); omp_set_num_threads(threads); std::srand(20261014);
     efanna2e::IndexRandom init(x.d,x.n);

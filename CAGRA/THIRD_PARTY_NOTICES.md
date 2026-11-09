@@ -46,7 +46,7 @@ ann/
 
 - `../ann_quantization/codecs.py` 提供 float32、INT8、PCA、PQ、Local adaptive INT8 的模型及统一接口。
 - `ann_codecs.py` 是适配入口，不包含量化算法副本。它根据自身位置加载同级共享包，并转出模型类、`make_codec`、`save_codec` 和 `load_codec`。
-- `pipeline.py` 使用共享实现进行训练和编码，并导出其原生模型；正式图搜索由 C++ 程序完成，量化评分直接复用 `../ann_quantization/native_search_scorer.hpp`，不保存私有算法副本。
+- `prepare_codes.py` 使用共享实现进行训练和编码，并导出其原生模型；正式图搜索由 C++ 程序完成，量化评分直接复用 `../ann_quantization/native_search_scorer.hpp`，不保存私有算法副本。
 - 查询以只读 mmap 加载共享编码和模型；量化方法不读取全精度底库，也不做精确重排。旧 `include/distance_kernels.h` 和旧单文件编码专用入口已移除。
 - 原说明中“`ann_codecs.py` 为本地算法副本”已不适用于当前结构；已移除对不存在的 `LOCAL_CODE_ORIGIN.json` 的引用。
 

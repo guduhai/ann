@@ -72,18 +72,22 @@ class Runtime:
                 header = stream.read(length)
         return size, header
 
-    def vector_rows(self, path):
+    def vector_shape(self, path):
         size, header = self.file_info(path)
         if header[:8] == b'EGF32001' and len(header) == 16:
             count, dim = struct.unpack('<II', header[8:])
-            valid = dim == 128 and size == 16 + count * dim * 4
+            valid = dim in (96, 128) and size == 16 + count * dim * 4
         else:
             dim = struct.unpack('<I', header[:4])[0] if len(header) >= 4 else 0
-            count = size // (129 * 4)
-            valid = dim == 128 and size % (129 * 4) == 0
+            stride = (dim + 1) * 4
+            count = size // stride
+            valid = dim in (96, 128) and size % stride == 0
         if not valid:
-            raise ValueError('需要完整的 128 维 fvecs 或 EGF32001 文件：' + str(path))
-        return uint(count, '文件向量数', 1)
+            raise ValueError('需要完整的 96/128 维 fvecs 或 EGF32001 文件：' + str(path))
+        return uint(count, '文件向量数', 1), dim
+
+    def vector_rows(self, path):
+        return self.vector_shape(path)[0]
 
     def code_rows(self, path):
         # Read only the NPY header. No NumPy dependency for launchers and no float base access.
